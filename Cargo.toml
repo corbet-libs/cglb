@@ -1,0 +1,17 @@
+[package]
+name = "cglb"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Global facade of cvld: verifies a real, unique person once; global gates, uniqueness, suspension, passport issuance"
+license = "FSL-1.1-ALv2"
+repository = "https://github.com/corbet-libs/cglb"
+readme = "README.md"
+publish = false
+include = ["Cargo.toml", "src/**", "README.md", "LICENSE.md"]
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
