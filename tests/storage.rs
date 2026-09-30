@@ -1,3 +1,4 @@
+//! Real memory and libSQL persistence, isolation, concurrency and rollback tests.
 use cglb::{
     Error,
     crlt::{Config, Db, Migration},
@@ -17,6 +18,28 @@ async fn contract(store: impl Store) {
     let key = Key::new("challenge", "a");
     let first = store.read(std::slice::from_ref(&key)).await.unwrap();
     assert_eq!(first.revision, 0);
+    assert!(
+        store
+            .compare_exchange(0, vec![change("good", 1), change("bad", u64::MAX)])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .read(std::slice::from_ref(&key))
+            .await
+            .unwrap()
+            .revision,
+        0
+    );
+    assert!(
+        store
+            .list("challenge", "", 10)
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
     store
         .compare_exchange(0, vec![change("a", 100), change("b", 101)])
         .await

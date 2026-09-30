@@ -27,7 +27,7 @@ zeroize = "=1.8.2"
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std_rng"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 tempfile = "3"
 
 [lints.rust]

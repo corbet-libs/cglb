@@ -1,3 +1,4 @@
+//! Real cryptographic global-facade round trips and adversarial lifecycle tests.
 #![cfg(feature = "development-gate")]
 use cglb::{
     development::DevelopmentGate,
@@ -645,10 +646,23 @@ async fn durable_renewal_after_reopen_keeps_identity_and_rejects_new_secret() {
     issue(&global, &mut rng, &alice, &secret, 103).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_issuance_consumes_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crlt::Db::open(crlt::Config::new(
+        format!("file://{}", dir.path().join("issuance-race.db").display()),
+        "",
+    ))
+    .await
+    .unwrap();
+    db.migrate(&[
+        crlt::Migration::new(1, "global", storage::SCHEMA),
+        crlt::Migration::new(2, "signing", csgn::SCHEMA),
+    ])
+    .await
+    .unwrap();
     let global = make(
-        MemoryStore::new("global").unwrap(),
+        LibsqlStore::new(&db, "global").unwrap(),
         csgn::MemoryStore::default(),
         10,
     )
@@ -667,12 +681,28 @@ async fn concurrent_issuance_consumes_once() {
     let challenge = global.challenge(&mut rng, &who, 100, 110).await.unwrap();
     let (request, pending) =
         cpsd::request_issue(&mut rng, &secret, global.issuer_public_key(), &challenge).unwrap();
-    let mut a = StdRng::seed_from_u64(21);
-    let mut b = StdRng::seed_from_u64(22);
-    let (left, right) = tokio::join!(
-        global.issue(&mut a, &who, &challenge, &request, 100),
-        global.issue(&mut b, &who, &challenge, &request, 100)
-    );
+    let global = std::sync::Arc::new(global);
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = Vec::new();
+    for seed in [21, 22] {
+        let global = global.clone();
+        let barrier = barrier.clone();
+        let request = request.clone();
+        let who = who.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut rng = StdRng::seed_from_u64(seed);
+            barrier.wait().await;
+            global
+                .issue(&mut rng, &who, &challenge, &request, 100)
+                .await
+        }));
+    }
+    let left = tasks.remove(0).await.unwrap();
+    let right = tasks.remove(0).await.unwrap();
     assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+    assert!(
+        matches!(left, Err(Error::Conflict | Error::Challenge))
+            || matches!(right, Err(Error::Conflict | Error::Challenge))
+    );
     pending.finish(&left.or(right).unwrap()).unwrap();
 }

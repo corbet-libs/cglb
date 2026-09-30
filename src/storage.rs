@@ -128,6 +128,14 @@ impl Store for MemoryStore {
             return Err(Error::Conflict);
         }
         let next = expected.checked_add(1).ok_or(Error::Exhausted)?;
+        if changes.iter().any(|change| {
+            change
+                .record
+                .as_ref()
+                .is_some_and(|record| record.deadline > i64::MAX as u64)
+        }) {
+            return Err(Error::InvalidTime);
+        }
         for change in changes {
             if let Some(record) = change.record {
                 state.records.insert(change.key, record);
