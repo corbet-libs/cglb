@@ -170,7 +170,7 @@ impl<S: Store, K: csgn::Store, I: cpsd::IssuanceStore> Global<S, K, I> {
             || policy.scope != self.store.scope()
             || policy.revision == 0
             || policy.epoch == 0
-            || policy.shared_expiry % 86_400 != 0
+            || !policy.shared_expiry.is_multiple_of(86_400)
             || policy.shared_expiry < now
             || policy.shared_expiry >= verified.valid_until()
             || policy.gates.is_empty()
@@ -714,7 +714,7 @@ impl Status {
             serde_json::from_slice(verified.payload()).map_err(|_| Error::Encoding)?;
         if value.version != 2
             || value.purpose != "global-passport-status"
-            || value.shared_expiry % 86_400 != 0
+            || !value.shared_expiry.is_multiple_of(86_400)
             || value.scope != scope
             || value.epoch < minimum_epoch
             || value.policy_revision < minimum_revision
