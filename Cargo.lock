@@ -739,8 +739,9 @@ dependencies = [
 [[package]]
 name = "cpsd"
 version = "0.0.0"
-source = "git+https://github.com/corbet-foss/cpsd?rev=5b2d5d9970d4beae171d85e478d06ba0b29e1992#5b2d5d9970d4beae171d85e478d06ba0b29e1992"
+source = "git+https://github.com/corbet-foss/cpsd?rev=b60f2bbff04dbe0a93cb41992006b06dafc798c3#b60f2bbff04dbe0a93cb41992006b06dafc798c3"
 dependencies = [
+ "crlt",
  "ark-bls12-381",
  "ark-ec",
  "ark-ff",

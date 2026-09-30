@@ -24,17 +24,29 @@ jobs:
           cache-on-failure: true
       - run: rustc --version
       - run: cargo fmt --all --check
-      - name: Resolve first lockfile on CI
-        run: test -f Cargo.lock || cargo generate-lockfile
+      - run: node --test .github/check-pins.test.mjs
+      - run: cargo metadata --locked --format-version 1 > dependency-metadata.json
+      - run: node .github/check-pins.mjs dependency-metadata.json
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked -- --nocapture
       - run: cargo test --locked --all-features -- --nocapture
+      - run: cargo test --locked --release --all-features
+      - name: Prove the development gate is absent even in hardened release builds
+        run: |
+          mkdir -p examples
+          cp .ci/development_gate_probe.rs examples/development_gate_probe.rs
+          if CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo check --locked --release --all-features --example development_gate_probe > release-probe.log 2>&1; then
+            echo "The development gate must not compile in release builds"
+            exit 1
+          fi
+          cat release-probe.log
+          grep -F 'could not find `development` in `cglb`' release-probe.log
       - name: Review dependency licenses and pins
         run: |
           cargo metadata --locked --format-version 1 > dependency-metadata.json
           node .github/check-licenses.mjs
-          node .github/check-pins.mjs
+          node .github/check-pins.mjs dependency-metadata.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

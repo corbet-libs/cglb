@@ -1,4 +1,4 @@
-//! Fixed-scope, revisioned persistence. Backends never decide identity policy.
+//! Fixed-scope persistence with independent revisions for each person/key.
 use crate::{Error, Result};
 use std::{
     collections::BTreeMap,
@@ -6,16 +6,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Composite key in the service's private namespace.
+/// Composite key selected only by trusted facade code.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Key {
-    /// Fixed internal record class.
+    /// Internal record class.
     pub bucket: String,
-    /// Opaque identifier within that class.
+    /// Opaque identifier within the class.
     pub id: String,
 }
 impl Key {
-    /// Construct a storage key. Only trusted facade code selects keys.
+    /// Construct a storage key.
     pub fn new(bucket: &str, id: impl Into<String>) -> Self {
         Self {
             bucket: bucket.into(),
@@ -23,65 +23,63 @@ impl Key {
         }
     }
 }
-/// Current state bytes; never raw gate input, passport bytes or secret keys.
+/// Current typed facade state; never raw provider input or a passport.
 #[derive(Clone)]
 pub struct Record {
-    /// JSON-encoded current state.
+    /// JSON state bytes.
     pub value: Vec<u8>,
-    /// Pending challenge deadline; zero for records without expiry.
+    /// Protocol challenge deadline; zero for other records.
     pub deadline: u64,
 }
-/// Consistent read and its compare-and-exchange revision.
+/// Observed per-key revisions. Missing keys have revision zero; deleted keys
+/// retain a revision tombstone, preventing delete/recreate ABA.
 #[derive(Clone, Default)]
 pub struct ReadSet {
-    /// Monotonic scope revision, zero before first write.
-    pub revision: i64,
-    /// Present records; requested missing keys are absent.
+    /// Every observed key, including missing records.
+    pub revisions: BTreeMap<Key, i64>,
+    /// Present records.
     pub records: BTreeMap<Key, Record>,
 }
 /// One atomic replacement or deletion.
 pub struct Change {
-    /// Record to replace.
+    /// Key that must have been observed in the supplied ReadSet.
     pub key: Key,
-    /// None deletes the record.
+    /// New state, or deletion.
     pub record: Option<Record>,
 }
-/// Storage capability for exactly one global scope.
-///
-/// Reads must be consistent. CAS must atomically check the scope revision and
-/// apply the entire batch, incrementing that revision once. It must never wrap,
-/// reset, partially apply, log values or return success before commit. An
-/// uncertain commit returns an error. Implementations and callers are trusted.
+/// Trusted storage capability for a fixed global scope. compare_exchange checks
+/// every supplied revision and changes only explicitly observed keys atomically.
+/// Unrelated people never invalidate an observation. Revisions never reset.
 pub trait Store: Send + Sync {
-    /// Fixed namespace, never chosen from a member request.
+    /// Service-selected namespace.
     fn scope(&self) -> &str;
-    /// Fetch a bounded collection of keys in one consistent snapshot.
+    /// Read keys and their individual revisions; writes validate the whole read set.
     fn read(&self, keys: &[Key]) -> impl Future<Output = Result<ReadSet>> + Send;
-    /// Read one bucket in key order, exclusive of `after`, at most `limit` rows.
+    /// Present bucket entries, ordered by key with an exclusive cursor.
     fn list(
         &self,
         bucket: &str,
         after: &str,
         limit: u32,
     ) -> impl Future<Output = Result<ReadSet>> + Send;
-    /// Read expired pending challenges, at most `limit` rows.
+    /// Bounded expired challenge rows, ordered by deadline and key.
     fn expired(&self, now: u64, limit: u32) -> impl Future<Output = Result<ReadSet>> + Send;
-    /// Apply a batch only if the revision still equals `expected`.
+    /// Compare the observed keys and atomically apply the complete batch.
     fn compare_exchange(
         &self,
-        expected: i64,
+        expected: &ReadSet,
         changes: Vec<Change>,
     ) -> impl Future<Output = Result<()>> + Send;
 }
-
-/// Real volatile store; clones share state, fresh instances are isolated.
+type Rows = BTreeMap<Key, (i64, Option<Record>)>;
+/// Volatile store; clones share actual rows and revisions.
 #[derive(Clone)]
 pub struct MemoryStore {
     scope: String,
-    state: Arc<Mutex<ReadSet>>,
+    state: Arc<Mutex<Rows>>,
 }
 impl MemoryStore {
-    /// Create a store for an opaque global scope.
+    /// Create a fixed namespace.
     pub fn new(scope: &str) -> Result<Self> {
         crate::validate_id(scope)?;
         Ok(Self {
@@ -91,24 +89,57 @@ impl MemoryStore {
     }
     fn select(&self, predicate: impl Fn(&Key, &Record) -> bool, limit: usize) -> Result<ReadSet> {
         let state = self.state.lock().map_err(|_| Error::Storage)?;
-        Ok(ReadSet {
-            revision: state.revision,
-            records: state
-                .records
-                .iter()
-                .filter(|(k, v)| predicate(k, v))
-                .take(limit)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        })
+        let mut read = ReadSet::default();
+        for (key, revision, record) in state
+            .iter()
+            .filter_map(|(key, (revision, record))| {
+                record
+                    .as_ref()
+                    .filter(|record| predicate(key, record))
+                    .map(|record| (key, revision, record))
+            })
+            .take(limit)
+        {
+            read.revisions.insert(key.clone(), *revision);
+            read.records.insert(key.clone(), record.clone());
+        }
+        Ok(read)
     }
+}
+fn validate(expected: &ReadSet, changes: &[Change]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for change in changes {
+        if !seen.insert(&change.key) || !expected.revisions.contains_key(&change.key) {
+            return Err(Error::Conflict);
+        }
+        expected.revisions[&change.key]
+            .checked_add(1)
+            .ok_or(Error::Exhausted)?;
+        if change
+            .record
+            .as_ref()
+            .is_some_and(|r| r.deadline > i64::MAX as u64)
+        {
+            return Err(Error::InvalidTime);
+        }
+    }
+    Ok(())
 }
 impl Store for MemoryStore {
     fn scope(&self) -> &str {
         &self.scope
     }
     async fn read(&self, keys: &[Key]) -> Result<ReadSet> {
-        self.select(|k, _| keys.contains(k), usize::MAX)
+        let state = self.state.lock().map_err(|_| Error::Storage)?;
+        let mut read = ReadSet::default();
+        for key in keys {
+            let (revision, record) = state.get(key).cloned().unwrap_or((0, None));
+            read.revisions.insert(key.clone(), revision);
+            if let Some(record) = record {
+                read.records.insert(key.clone(), record);
+            }
+        }
+        Ok(read)
     }
     async fn list(&self, bucket: &str, after: &str, limit: u32) -> Result<ReadSet> {
         self.select(
@@ -118,69 +149,52 @@ impl Store for MemoryStore {
     }
     async fn expired(&self, now: u64, limit: u32) -> Result<ReadSet> {
         self.select(
-            |k, v| k.bucket == "challenge" && v.deadline < now,
+            |k, r| k.bucket == "challenge" && r.deadline < now,
             limit as usize,
         )
     }
-    async fn compare_exchange(&self, expected: i64, changes: Vec<Change>) -> Result<()> {
+    async fn compare_exchange(&self, expected: &ReadSet, changes: Vec<Change>) -> Result<()> {
+        validate(expected, &changes)?;
         let mut state = self.state.lock().map_err(|_| Error::Storage)?;
-        if state.revision != expected {
+        if expected
+            .revisions
+            .iter()
+            .any(|(key, rev)| state.get(key).map_or(0, |(r, _)| *r) != *rev)
+        {
             return Err(Error::Conflict);
         }
-        let next = expected.checked_add(1).ok_or(Error::Exhausted)?;
-        if changes.iter().any(|change| {
-            change
-                .record
-                .as_ref()
-                .is_some_and(|record| record.deadline > i64::MAX as u64)
-        }) {
-            return Err(Error::InvalidTime);
-        }
         for change in changes {
-            if let Some(record) = change.record {
-                state.records.insert(change.key, record);
-            } else {
-                state.records.remove(&change.key);
-            }
+            let next = expected.revisions[&change.key] + 1;
+            state.insert(change.key, (next, change.record));
         }
-        state.revision = next;
         Ok(())
     }
 }
-
-/// Append to the service-owned crlt migration history, followed by csgn::SCHEMA.
+/// New installations append this schema and the csgn/cpsd leaf schemas to their
+/// service-owned migration list. Existing installations need an explicit upgrade.
 pub const SCHEMA: &str = "
-CREATE TABLE cglb_revision (
- community_id TEXT NOT NULL, singleton INTEGER NOT NULL CHECK(singleton = 1),
- revision INTEGER NOT NULL CHECK(revision > 0),
- PRIMARY KEY(community_id, singleton)
-) WITHOUT ROWID;
 CREATE TABLE cglb_record (
  community_id TEXT NOT NULL, bucket TEXT NOT NULL, entry_key TEXT NOT NULL,
- value BLOB NOT NULL, deadline INTEGER NOT NULL CHECK(deadline >= 0),
- PRIMARY KEY(community_id, bucket, entry_key)
+ revision INTEGER NOT NULL CHECK(revision > 0), value BLOB,
+ deadline INTEGER NOT NULL CHECK(deadline >= 0),
+ PRIMARY KEY(community_id,bucket,entry_key)
 ) WITHOUT ROWID;
-CREATE INDEX cglb_deadline ON cglb_record(community_id, bucket, deadline, entry_key);
+CREATE INDEX cglb_deadline ON cglb_record(community_id,bucket,deadline,entry_key);
 ";
-const REV: &str = "SELECT revision FROM cglb_revision WHERE singleton = 1";
-const GET: &str = "SELECT value, deadline FROM cglb_record WHERE bucket = ?1 AND entry_key = ?2";
-const LIST: &str = "SELECT entry_key, value, deadline FROM cglb_record WHERE bucket = ?1 AND entry_key > ?2 ORDER BY entry_key LIMIT ?3";
-const EXPIRED: &str = "SELECT entry_key, value, deadline FROM cglb_record WHERE bucket = ?1 AND deadline < ?2 ORDER BY deadline, entry_key LIMIT ?3";
-const DELETE: &str = "DELETE FROM cglb_record WHERE bucket = ?1 AND entry_key = ?2";
-const INSERT: &str =
-    "INSERT INTO cglb_record(bucket, entry_key, value, deadline) VALUES (?1, ?2, ?3, ?4)";
-const ADVANCE: &str =
-    "UPDATE cglb_revision SET revision = ?1 WHERE singleton = 1 AND revision = ?2";
-const CREATE_REV: &str = "INSERT INTO cglb_revision(singleton, revision) VALUES (1, ?1)";
-
-/// Durable adapter over the pinned crlt facade and official libSQL client.
+const GET: &str =
+    "SELECT revision, value, deadline FROM cglb_record WHERE bucket = ?1 AND entry_key = ?2";
+const LIST: &str = "SELECT entry_key, revision, value, deadline FROM cglb_record WHERE bucket = ?1 AND entry_key > ?2 AND value IS NOT NULL ORDER BY entry_key LIMIT ?3";
+const EXPIRED: &str = "SELECT entry_key, revision, value, deadline FROM cglb_record WHERE bucket = ?1 AND deadline < ?2 AND value IS NOT NULL ORDER BY deadline, entry_key LIMIT ?3";
+const INSERT: &str = "INSERT INTO cglb_record(bucket, entry_key, revision, value, deadline) VALUES (?1, ?2, ?3, ?4, ?5)";
+const UPDATE: &str = "UPDATE cglb_record SET revision = ?1, value = ?2, deadline = ?3 WHERE bucket = ?4 AND entry_key = ?5 AND revision = ?6";
+/// Durable per-row revisions over the service's crlt pool.
 #[derive(Clone)]
 pub struct LibsqlStore {
     scope: String,
     db: crlt::Community,
 }
 impl LibsqlStore {
-    /// Bind a service-selected scope. Migrations must already be installed.
+    /// Bind the already migrated global database.
     pub fn new(db: &crlt::Db, scope: &str) -> Result<Self> {
         crate::validate_id(scope)?;
         Ok(Self {
@@ -188,39 +202,43 @@ impl LibsqlStore {
             db: db.community(scope).map_err(|_| Error::Storage)?,
         })
     }
-    async fn revision(tx: &mut crlt::Transaction) -> Result<i64> {
-        let rows = tx.query(REV, ()).await.map_err(|_| Error::Storage)?;
-        rows.first()
-            .map(|r| r.get_i64(0).map_err(|_| Error::Storage))
-            .unwrap_or(Ok(0))
-    }
-    async fn select(&self, sql: &str, params: Vec<crlt::Value>, bucket: &str) -> Result<ReadSet> {
-        let mut tx = self.db.tx().await.map_err(|_| Error::Storage)?;
-        let revision = Self::revision(&mut tx).await?;
-        let mut records = BTreeMap::new();
-        for row in tx.query(sql, params).await.map_err(|_| Error::Storage)? {
+    async fn select(&self, sql: &str, args: Vec<crlt::Value>, bucket: &str) -> Result<ReadSet> {
+        let mut read = ReadSet::default();
+        for row in self.db.query(sql, args).await.map_err(|_| Error::Storage)? {
             let key = Key::new(bucket, row.get_str(0).map_err(|_| Error::Storage)?);
-            records.insert(key, decode(&row, 1)?);
+            add(&mut read, key, &row, 1)?;
         }
-        tx.commit().await.map_err(|_| Error::Storage)?;
-        Ok(ReadSet { revision, records })
+        Ok(read)
     }
-    /// Check every adapter statement against the real database query planner.
+    /// Check every statement through the actual query planner.
     pub async fn check_query_plans(&self) -> Result<()> {
         use crlt::Value;
         let text = || Value::Text("probe".into());
         for (sql, args) in [
-            (REV, vec![]),
             (GET, vec![text(), text()]),
-            (LIST, vec![text(), text(), Value::Integer(1)]),
-            (EXPIRED, vec![text(), Value::Integer(1), Value::Integer(1)]),
-            (DELETE, vec![text(), text()]),
+            (LIST, vec![text(), text(), 1i64.into()]),
+            (EXPIRED, vec![text(), 1i64.into(), 1i64.into()]),
             (
                 INSERT,
-                vec![text(), text(), Value::Blob(vec![]), Value::Integer(0)],
+                vec![
+                    text(),
+                    text(),
+                    1i64.into(),
+                    Value::Blob(vec![]),
+                    0i64.into(),
+                ],
             ),
-            (ADVANCE, vec![Value::Integer(2), Value::Integer(1)]),
-            (CREATE_REV, vec![Value::Integer(1)]),
+            (
+                UPDATE,
+                vec![
+                    2i64.into(),
+                    Value::Null,
+                    0i64.into(),
+                    text(),
+                    text(),
+                    1i64.into(),
+                ],
+            ),
         ] {
             self.db
                 .explain(sql, args)
@@ -232,45 +250,55 @@ impl LibsqlStore {
         Ok(())
     }
 }
-fn decode(row: &crlt::Row, offset: usize) -> Result<Record> {
-    let crlt::Value::Blob(value) = row.get_value(offset).map_err(|_| Error::Storage)? else {
+fn add(read: &mut ReadSet, key: Key, row: &crlt::Row, offset: usize) -> Result<()> {
+    let revision = row.get_i64(offset).map_err(|_| Error::Storage)?;
+    if revision <= 0 {
         return Err(Error::Storage);
-    };
-    let deadline = u64::try_from(row.get_i64(offset + 1).map_err(|_| Error::Storage)?)
-        .map_err(|_| Error::Storage)?;
-    Ok(Record {
-        value: value.clone(),
-        deadline,
-    })
+    }
+    read.revisions.insert(key.clone(), revision);
+    match row.get_value(offset + 1).map_err(|_| Error::Storage)? {
+        crlt::Value::Null => {}
+        crlt::Value::Blob(value) => {
+            let deadline = u64::try_from(row.get_i64(offset + 2).map_err(|_| Error::Storage)?)
+                .map_err(|_| Error::Storage)?;
+            read.records.insert(
+                key,
+                Record {
+                    value: value.clone(),
+                    deadline,
+                },
+            );
+        }
+        _ => return Err(Error::Storage),
+    }
+    Ok(())
 }
 impl Store for LibsqlStore {
     fn scope(&self) -> &str {
         &self.scope
     }
     async fn read(&self, keys: &[Key]) -> Result<ReadSet> {
-        let mut tx = self.db.tx().await.map_err(|_| Error::Storage)?;
-        let revision = Self::revision(&mut tx).await?;
-        let mut records = BTreeMap::new();
+        let mut read = ReadSet::default();
+        // Point reads acquire no write transaction. A writer validates every
+        // observed revision inside its one transaction before committing.
         for key in keys {
-            let rows = tx
+            let rows = self
+                .db
                 .query(GET, crlt::params![key.bucket.clone(), key.id.clone()])
                 .await
                 .map_err(|_| Error::Storage)?;
             if let Some(row) = rows.first() {
-                records.insert(key.clone(), decode(row, 0)?);
+                add(&mut read, key.clone(), row, 0)?;
+            } else {
+                read.revisions.insert(key.clone(), 0);
             }
         }
-        tx.commit().await.map_err(|_| Error::Storage)?;
-        Ok(ReadSet { revision, records })
+        Ok(read)
     }
     async fn list(&self, bucket: &str, after: &str, limit: u32) -> Result<ReadSet> {
         self.select(
             LIST,
-            vec![
-                bucket.to_owned().into(),
-                after.to_owned().into(),
-                i64::from(limit).into(),
-            ],
+            vec![bucket.into(), after.into(), i64::from(limit).into()],
             bucket,
         )
         .await
@@ -279,45 +307,56 @@ impl Store for LibsqlStore {
         let now = i64::try_from(now).map_err(|_| Error::InvalidTime)?;
         self.select(
             EXPIRED,
-            vec![
-                "challenge".to_owned().into(),
-                now.into(),
-                i64::from(limit).into(),
-            ],
+            vec!["challenge".into(), now.into(), i64::from(limit).into()],
             "challenge",
         )
         .await
     }
-    async fn compare_exchange(&self, expected: i64, changes: Vec<Change>) -> Result<()> {
+    async fn compare_exchange(&self, expected: &ReadSet, changes: Vec<Change>) -> Result<()> {
+        validate(expected, &changes)?;
         let mut tx = self.db.tx().await.map_err(|_| Error::Storage)?;
-        if Self::revision(&mut tx).await? != expected {
-            return Err(Error::Conflict);
-        }
-        let next = expected.checked_add(1).ok_or(Error::Exhausted)?;
-        if expected == 0 {
-            tx.execute(CREATE_REV, [next])
+        for (key, revision) in &expected.revisions {
+            let rows = tx
+                .query(GET, crlt::params![key.bucket.clone(), key.id.clone()])
                 .await
                 .map_err(|_| Error::Storage)?;
-        } else {
-            tx.execute(ADVANCE, [next, expected])
-                .await
-                .map_err(|_| Error::Storage)?;
+            let current = rows
+                .first()
+                .map(|r| r.get_i64(0).map_err(|_| Error::Storage))
+                .transpose()?
+                .unwrap_or(0);
+            if current != *revision {
+                return Err(Error::Conflict);
+            }
         }
         for change in changes {
-            tx.execute(
-                DELETE,
-                crlt::params![change.key.bucket.clone(), change.key.id.clone()],
-            )
-            .await
-            .map_err(|_| Error::Storage)?;
-            if let Some(record) = change.record {
-                let deadline = i64::try_from(record.deadline).map_err(|_| Error::InvalidTime)?;
+            let old = expected.revisions[&change.key];
+            let (value, deadline) = change.record.map_or((crlt::Value::Null, 0), |r| {
+                (crlt::Value::Blob(r.value), r.deadline as i64)
+            });
+            let affected = if old == 0 {
                 tx.execute(
                     INSERT,
-                    crlt::params![change.key.bucket, change.key.id, record.value, deadline],
+                    crlt::params![change.key.bucket, change.key.id, old + 1, value, deadline],
                 )
                 .await
-                .map_err(|_| Error::Storage)?;
+            } else {
+                tx.execute(
+                    UPDATE,
+                    crlt::params![
+                        old + 1,
+                        value,
+                        deadline,
+                        change.key.bucket,
+                        change.key.id,
+                        old
+                    ],
+                )
+                .await
+            }
+            .map_err(|_| Error::Storage)?;
+            if affected != 1 {
+                return Err(Error::Conflict);
             }
         }
         tx.commit().await.map_err(|_| Error::Storage)

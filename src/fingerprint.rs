@@ -13,15 +13,45 @@ impl FingerprintKey {
         key
     }
     pub(crate) fn fingerprint(&self, scope: &str, gate: &str, value: &[u8]) -> String {
-        // Length prefixes frame fields; all cryptography is RustCrypto HMAC.
+        hex(&self.digest(
+            b"cglb/uniqueness/v1",
+            &[scope.as_bytes(), gate.as_bytes(), value],
+        ))
+    }
+    pub(crate) fn person_id(&self, scope: &str, subject: &crate::Subject) -> [u8; 32] {
+        self.digest(
+            b"cglb/cpsd-person/v1",
+            &[scope.as_bytes(), subject.as_str().as_bytes()],
+        )
+    }
+    pub(crate) fn check_id(
+        &self,
+        scope: &str,
+        subject: &crate::Subject,
+        gate: &str,
+        provider: &str,
+        check: &crate::CheckId,
+    ) -> crate::CheckId {
+        crate::CheckId(hex(&self.digest(
+            b"cglb/provider-check/v1",
+            &[
+                scope.as_bytes(),
+                subject.as_str().as_bytes(),
+                gate.as_bytes(),
+                provider.as_bytes(),
+                check.as_str().as_bytes(),
+            ],
+        )))
+    }
+    fn digest(&self, domain: &[u8], fields: &[&[u8]]) -> [u8; 32] {
         let mut mac =
             Hmac::<Sha256>::new_from_slice(self.0.as_ref()).expect("HMAC accepts a 32-byte key");
-        mac.update(b"cglb/uniqueness/v1");
-        for field in [scope.as_bytes(), gate.as_bytes(), value] {
+        mac.update(domain);
+        for field in fields {
             mac.update(&(field.len() as u64).to_be_bytes());
             mac.update(field);
         }
-        hex(&mac.finalize().into_bytes())
+        mac.finalize().into_bytes().into()
     }
 }
 pub(crate) fn hex(bytes: &[u8]) -> String {

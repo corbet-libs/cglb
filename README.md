@@ -39,7 +39,7 @@ catalogue. No GPL/AGPL-only dependency is permitted.
   payload with cplc's policy publisher remains a service adapter responsibility.
 - `run_gate` executes a trusted `GlobalGate` implementation and records only its
   result and HMAC reservation. `development::DevelopmentGate` requires the
-  non-default `development-gate` feature and `Mode::Development`.
+  non-default `development-gate` feature, a development build and `Mode::Development`.
 - `challenge` and `issue` drive cpsd blind issuance. The holder uses cpsd
   `request_issue`, `PendingIssuance::finish`, and `PresentationRequest::for_epoch`.
 - `warn`, `suspend`, and paginated private `revocations` manage current suspension
@@ -57,13 +57,13 @@ Never use the deterministic seeds from tests in a service.
 Install the complete service migration history before opening adapters:
 
 ```rust,no_run
-use cglb::{crlt::{Config, Db, Migration}, csgn, storage};
+use crlt::{Config, Db, Migration};
+use cglb::storage;
 # async fn example(url: String, token: String) -> Result<(), Box<dyn std::error::Error>> {
 let db = Db::open(Config::new(url, token)).await?;
-db.migrate(&[
-    Migration::new(1, "global", storage::SCHEMA),
-    Migration::new(2, "signing", csgn::SCHEMA),
-]).await?;
+let migrations: Vec<_> = cglb::SCHEMAS.iter().enumerate()
+    .map(|(i, (name, sql))| Migration::new(i as u32 + 1, name, sql)).collect();
+db.migrate(&migrations).await?;
 let identities = storage::LibsqlStore::new(&db, "global")?;
 let signing = csgn::LibsqlStore::new(db.community("global")?);
 identities.check_query_plans().await?;
@@ -99,3 +99,17 @@ bumps the entire epoch and old passports fail once verifiers refresh. Public
 status deliberately contains no individual revocation entries. BBS issuer and
 HMAC-key rotation require a future explicit migration protocol; reopening with
 changed keys fails closed. No cryptographic security certification is claimed.
+
+## Security contract update
+
+The implemented API is `Global<S,K,I>` with an explicit cpsd issuance store and an
+authenticated `Session`. `run_gate` takes a retry-stable `CheckId`. Per-row revisions
+isolate unrelated people, and provider APIs must guarantee idempotent billing.
+There is one pending challenge per person. Holder continuity belongs solely to
+cpsd. Uniqueness reservations and holder bindings are permanent: **NO RETURN**.
+
+Global policy authority epochs are independent of suspension bumps. Stored gate
+expiries and status signatures use UTC days; short challenge deadlines retain
+seconds for replay/capacity bounds. Status is a purpose-bound SettingsSnapshot.
+The development gate is absent in release builds, including hardened builds.
+See [the current contract](docs/CONTRACT.md) for migration and provider obligations.

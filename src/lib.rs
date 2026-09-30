@@ -1,17 +1,38 @@
 //! Global gates, unique identities, suspension and blind passports for cvld.
 //! Native service facade; see the README and implemented contract for its trust boundary.
 #![forbid(unsafe_code)]
-#[cfg(feature = "development-gate")]
+#[cfg(all(feature = "development-gate", cglb_development))]
 pub mod development;
 mod facade;
 mod fingerprint;
 pub mod storage;
 mod types;
+/// Issuer protocol messages only. Holder APIs stay in the cpsd leaf.
+pub use cpsd::{BlindPassport, IssuanceChallenge, IssuanceRequest, IssuerPublicKey};
 pub use facade::{Global, Limits};
 pub use fingerprint::FingerprintKey;
 pub use types::*;
-/// Exact leaf versions used by this facade, for service and holder composition.
-pub use {cpsd, crlt, csgn};
+
+/// Schemas for a NEW global database, in service-assigned migration order.
+/// Existing databases need an explicit identity-preserving upgrade; an old
+/// binding cannot be opened as version two and must never be silently reset.
+pub const SCHEMAS: [(&str, &str); 5] = [
+    ("cglb", storage::SCHEMA),
+    ("csgn", csgn::SCHEMA),
+    ("cpsd challenges", cpsd::storage::libsql::SCHEMA),
+    ("cpsd continuity", cpsd::storage::libsql::ISSUANCE_SCHEMA),
+    (
+        "cpsd uniqueness",
+        cpsd::storage::libsql::ISSUANCE_UNIQUENESS_SCHEMA,
+    ),
+];
+
+/// Holder operations are deliberately not re-exported by this issuer facade.
+/// ```compile_fail
+/// use cglb::cpsd::HolderSecret;
+/// ```
+#[doc(hidden)]
+pub struct IssuerBoundary;
 
 /// Result with privacy-preserving errors; no raw evidence or identifiers.
 pub type Result<T> = std::result::Result<T, Error>;

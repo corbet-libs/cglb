@@ -37,7 +37,7 @@ pub enum Mode {
     /// Reject every development gate and development gate policy.
     Production,
     /// Permit the opt-in synthetic gate in isolated development deployments.
-    #[cfg(feature = "development-gate")]
+    #[cfg(all(feature = "development-gate", cglb_development))]
     Development,
 }
 /// One required gate and trusted provider in a signed global policy.
@@ -61,7 +61,7 @@ pub struct Policy {
     pub scope: String,
     /// Strictly increasing authority revision.
     pub revision: u64,
-    /// Epoch must exceed even locally advanced suspension epochs.
+    /// Authority-owned epoch; each policy advances it by exactly one.
     pub epoch: u64,
     /// Common inclusive passport and global-gate expiry, in Unix seconds.
     pub shared_expiry: u64,
@@ -80,7 +80,7 @@ pub struct GateResult {
     pub subject: Subject,
     /// Trusted provider identifier.
     pub provider: String,
-    /// Actual evidence expiry; issuance never rounds this upward.
+    /// Evidence expiry rounded down to a UTC day; never rounded upward.
     pub valid_until: u64,
 }
 /// This facade only accepts global results.
@@ -109,9 +109,12 @@ pub trait GlobalGate: Send + Sync {
     fn provider(&self) -> &str;
     /// True for synthetic adapters; production instances reject them.
     fn development_only(&self) -> bool;
-    /// Verify hostile input using the gate leaf's own executing logic.
+    /// Verify through the provider's idempotent API. Every retry, including after
+    /// cancellation or uncertain commits, reuses this key. The provider must
+    /// return the same outcome without billing again for an existing key.
     fn verify(
         &self,
+        check: &CheckId,
         subject: &Subject,
         input: &[u8],
         now: u64,
@@ -130,7 +133,7 @@ pub enum PermanentReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Suspension {
-    /// Renewal becomes eligible again at this Unix second.
+    /// Renewal becomes eligible again at this UTC-day boundary.
     Temporary {
         /// Exclusive end of the suspension.
         until: u64,
@@ -158,8 +161,10 @@ pub struct Revocation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
-    /// Wire version, currently one.
+    /// Wire version, currently two.
     pub version: u32,
+    /// Exact domain separator: global-passport-status.
+    pub purpose: String,
     /// Global scope.
     pub scope: String,
     /// Effective epoch, including suspension bumps.
@@ -174,11 +179,20 @@ pub struct Status {
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct State {
     pub policy: Policy,
-    pub epoch: u64,
+    pub local_epoch: u64,
 }
-#[derive(Default, Serialize, Deserialize)]
+impl State {
+    pub(crate) fn epoch(&self) -> Result<u64> {
+        self.policy
+            .epoch
+            .checked_add(self.local_epoch)
+            .ok_or(Error::Exhausted)
+    }
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Account {
-    pub tag: Option<Vec<u8>>,
+    pub check_ids: BTreeMap<String, CheckId>,
+    pub check_inputs: BTreeMap<String, String>,
     pub gates: BTreeMap<String, GateResult>,
     pub fingerprints: BTreeMap<String, String>,
     pub warned: bool,
@@ -195,13 +209,68 @@ impl Account {
 }
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Pending {
-    pub subject: Subject,
     pub epoch: u64,
-    pub issuer: Vec<u8>,
+    pub session: [u8; 32],
+    pub nonce: Option<[u8; 32]>,
     pub deadline: u64,
 }
+
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Binding {
+    pub version: u32,
     pub issuer: Vec<u8>,
     pub fingerprint_key_check: String,
+}
+
+/// Stable provider idempotency key for this authenticated check, input and
+/// policy cohort. Contains no plain subject or provider input.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckId(pub(crate) String);
+impl CheckId {
+    /// Create a fresh check ID and retain it unchanged for every retry.
+    pub fn generate<R: cpsd::rand::RngCore + cpsd::rand::CryptoRng>(rng: &mut R) -> Self {
+        let mut bytes = [0; 32];
+        rng.fill_bytes(&mut bytes);
+        Self(crate::fingerprint::hex(&bytes))
+    }
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.0.len() != 64
+            || !self
+                .0
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(Error::InvalidIdentifier);
+        }
+        Ok(())
+    }
+    /// Pass unchanged to the provider's idempotency-key field.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl std::fmt::Debug for CheckId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CheckId([redacted])")
+    }
+}
+/// Global person/session identity imported from successful service authentication.
+/// This is trusted composition input, never a deserializable client credential.
+#[derive(Clone)]
+pub struct Session {
+    pub(crate) subject: Subject,
+    pub(crate) id: [u8; 32],
+}
+impl Session {
+    /// Bind the service-authenticated subject to a nonzero opaque session ID.
+    pub fn authenticated(subject: Subject, id: [u8; 32]) -> Result<Self> {
+        if id == [0; 32] {
+            return Err(Error::InvalidIdentifier);
+        }
+        Ok(Self { subject, id })
+    }
+    /// Current authenticated person, never a community pseudonym.
+    pub fn subject(&self) -> &Subject {
+        &self.subject
+    }
 }

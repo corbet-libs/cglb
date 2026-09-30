@@ -1,111 +1,119 @@
 # cglb contract
 
-cglb is the native global facade of cvld, behind `wallet.cmeet.me`. It owns a
-separate service and database. Neither it nor a community service receives the
-other's database capability. Every table still carries crlt's `community_id`,
-used here as the fixed global service namespace.
+cglb is cvld's separate global issuer. Its authenticated service owns global
+person IDs, session IDs, provider selection, authority trust, legal/self-ban
+permission, secrets, clocks and transport limits. Community pseudonyms, community
+policies and community databases never enter this facade. No login dates, raw
+provider evidence, proof payloads or issued passports are stored.
 
-The facade composes crlt storage, cpsd blind passport issuance and csgn durable
-COSE signing. Those LGPL leaves execute database and cryptographic operations.
-RustCrypto HMAC-SHA256 supplies keyed, domain-separated uniqueness fingerprints;
-the service supplies a stable secret key. No private key enters the database.
-No login dates, request logs, raw gate evidence, community pseudonyms or passport
-copies are stored. Only current identity, gate and suspension state is retained.
+## One owner per operation
 
-## Issuance and gates
+`Global<S,K,I>` composes a cglb store, csgn durable signer and cpsd IssuanceStore.
+`Session::authenticated` imports a stable opaque person and nonzero session ID
+from the service authentication layer; it is not a client-deserializable receipt.
+The facade checks eligibility and policy. cpsd alone generates/reserves issuance
+nonces, verifies blind issuance, atomically consumes the nonce and enforces both
+directions of permanent person/holder-tag continuity. cglb keeps no issuer tags,
+implements no continuity check and exports only issuer protocol messages, never
+holder APIs. Wallet origin authentication and unsigned-request compile failures
+remain cpsd's responsibility; tests exercise real signed requests and wrong origins.
 
-Trusted gate adapters return a proof expiry and optional canonical uniqueness
-input. Only the feature-gated development test gate ships here. A production
-instance rejects development adapters and development policy. Real global gates
-remain future leaf integrations. Adapter code is trusted; member input is not
-an authorization to record a gate.
+The service appends `SCHEMAS` to its complete migration history for a NEW global
+database: cglb rows, csgn state, cpsd challenges, cpsd issuer tags and their unique
+owner index. All SQL uses crlt with scope keys and index checks. A version-two
+binding refuses old layouts. Existing installations require an explicit upgrade
+preserving every burned fingerprint and moving holder bindings into cpsd; never
+reset the database or silently discard an old tag. Global BBS and HMAC keys remain
+immutable; only the COSE key can rotate through csgn.
 
-Policy arrives as a csgn settings snapshot from an explicitly trusted authority.
-It binds the global scope, monotonically increasing revision and epoch, enabled
-gates/providers, uniqueness requirements and one common expiry. At least one
-uniqueness gate is mandatory. The public BBS catalogue must contain every gate.
+## Provider checks and concurrency
 
-Gate recording claims a fingerprint atomically. Another subject cannot claim it,
-and a subject cannot switch an already claimed uniqueness value. Reservations
-survive expiry and permanent suspension. Issuance requires every policy gate to
-reach the common expiry; shorter evidence is never rounded upward. Passport and
-included gates are signed with that same expiry, enabling cpsd's fast proof mode.
+`run_gate` requires a fresh `CheckId` for a new check. Keep that ID unchanged for
+all retries, including after disconnects, cancellation, restarts or uncertain
+commits. The facade derives a stable provider idempotency key bound to scope,
+person, gate and provider. A provider leaf MUST use the provider's idempotent API:
+repeated delivery must return the same outcome without charging again, and reuse
+with a different input must be refused. Providers without this guarantee cannot
+implement the paid gate contract. cglb does not claim exactly-once network delivery.
 
-A random issuance challenge is bound to the authenticated global subject, issuer
-key and current epoch. Successful issuance atomically consumes it and binds the
-verified cpsd issuer tag. Renewal requires that same tag; a tag cannot belong to
-two subjects. Invalid proofs and failed policy checks release no passport.
-Pending challenges have bounded lifetimes and can be pruned; there is no consumed
-challenge history. Lost responses require a new challenge with the same secret.
+Only the latest check ID/input commitment accompanies each current gate result;
+there is no check history. Exact completed retries use the retained result.
+After a slow provider returns, the facade rereads current eligibility and policy,
+then retries only the atomic storage commit. It never calls the provider again
+because of a CAS conflict. Unrelated people cannot invalidate the check.
+Cancellation before persistence is retried through the same provider key.
 
-## Suspension and publication
+Each cglb record has an independent increasing revision. CAS validates only the
+observed keys, including missing keys; every changed key must have been observed.
+Deletion retains the key revision to prevent ABA. Read-only operations take no
+write transaction. Composite indexes cover lookups, pages and challenge expiry.
+The global pending count coordinates only short challenge-capacity transactions;
+it is not a revision counter for identity operations.
 
-Temporary suspension requires a prior warning and a finite future deadline.
-Permanent suspension accepts only legal-order or self-ban categories. Every
-suspension atomically updates the private revocation list and advances the global
-epoch. Temporary expiry allows renewal; permanent suspension has no reversal API.
+## Gates, time and no return
 
-cpsd currently cannot privately prove individual nonrevocation. Advancing the
-epoch therefore invalidates the whole older passport cohort once verifiers adopt
-the new authenticated epoch. Active holders renew with the same secret. Public
-signed status exposes the epoch, policy revision, common expiry and BBS public
-key, never global subject IDs or issuer tags. The individual revocation list is
-private administrative state. This is not an accumulator or immediate revocation
-at an offline verifier. Snapshot freshness and distribution belong to the service.
+Provider leaves must authenticate evidence to the person/session and normalize
+uniqueness inputs identically across providers, such as canonical E.164 for a
+phone gate. Canonicalization precedes the shared HMAC; the transient canonical
+bytes are zeroized. Tests show equivalent provider spellings reserve one identity.
+Real phone/other providers remain separate integrations; no normalization is
+inferred from raw client input by the facade.
 
-## Storage and trust boundary
+**NO RETURN:** uniqueness fingerprints are burned forever. Gate expiry,
+registration expiry, holder-secret loss, passkey loss and suspension never release
+one. A person cannot switch an established uniqueness value. A holder who loses
+the secret cannot obtain a replacement identity or community pseudonym. There is
+no release, recovery or tombstone-reset API. cpsd also prevents the same holder
+secret from binding to a second person and bypassing a suspension.
 
-A small revisioned storage trait supplies consistent reads and atomic
-compare-and-exchange batches, with real memory and crlt/libSQL adapters. The
-facade owns decisions; storage adapters own only persistence. Composite primary
-keys index point reads and bounded bucket scans; a deadline index supports
-challenge pruning. Conflicts fail closed and require a fresh operation. A remote
-timeout may have committed: reopen/read state, never assume rollback or blindly
-retry. Deployment must prevent database rollback.
+Retained gate expiries round DOWN to UTC days; rounding never extends evidence.
+Shared passport cohort expiry must be a day boundary. Eligibility requires every
+configured gate to reach that cohort. Temporary suspension ends must be day
+boundaries. csgn key activation/rotation, signed status issuance and status expiry
+use days. The signer must have been created with day-aligned activation.
 
-The service owns authentication, root/self-ban authorization, verified legal
-orders, warning delivery, clocks, throttling, secret provisioning and physical
-database routing. An authenticated subject ID must be opaque and stable. Library
-methods are trusted service APIs, not directly exposed member endpoints. One
-csgn writer serializes signing/key-ring publication; its persistence fences stale
-writers. All private keys remain in the platform secret store or process memory.
+Issuance challenges retain seconds: their short deadline bounds proof replay and
+resource use. This is a transient protocol slot, not an activity timestamp. One
+person may hold at most one pending slot, across sessions, within the global
+capacity. The slot is reserved before cpsd is called, so cancellation cannot
+allocate unlimited orphan nonces. Issuance removes it; expiry/pruning frees it.
+A lost or uncertain response may require waiting for that short deadline before
+a new challenge. Pruning never touches permanent uniqueness or holder bindings.
 
-This library targets current stable native Rust. Device-side proofs remain in
-cpsd. FSL-1.1-ALv2; no GPL/AGPL-only dependency; never publish to a registry.
-Tests and format/Clippy checks run only in GitHub Actions. Live Turso tests run
-only when both TURSO_URL and TURSO_TOKEN are nonempty, with a disposable database
-and no credentials in the repository or public CI.
+## Policy, suspension and publications
 
-## Concrete API and storage layout
+A separate authenticated global authority signs the typed `Policy` JSON as a
+csgn SettingsSnapshot; the service supplies its pinned ring. A community cplc
+signer never signs global policy. Revision increases and authority epoch advances
+by exactly one, starting at one. Effective passport epoch is authority epoch plus
+a separate local suspension counter. Policy acceptance never depends on the
+authority knowing that counter. Invalid large jumps cannot exhaust revocation.
 
-`Global<S, K>` takes a cglb `storage::Store` and csgn `Store` through a
-`PersistentSigner`. `GlobalGate` is the minimal future-provider seam; the shipped
-`DevelopmentGate` is opt-in only. `Policy` is a strict version-one JSON payload in
-a csgn `SettingsSnapshot`; the caller selects its trusted authority ring. It must
-cover the entire common inclusive expiry with its exclusive COSE validity. Exact
-policy retries are idempotent; other replacements advance both revision and the
-current effective epoch. Pending issuance from an older epoch becomes unusable.
+Temporary suspension requires a warning; permanent legal/self-ban suspension has
+no reversal API. Suspensions atomically update private state and the effective
+epoch. cpsd cannot privately prove individual nonrevocation, so the new epoch
+invalidates the old global cohort once verifiers adopt it. Eligible people renew;
+suspended people cannot. cmnt requires a fresh presentation at credential renewal,
+against the current authenticated global epoch. Offline credentials retain their
+bounded lifetime; this is not an offline revocation accumulator.
 
-The tables are `cglb_revision` (one scope revision), `cglb_record` (current typed
-records), and the unmodified `csgn_state` leaf schema. Record buckets are metadata,
-accounts, uniqueness fingerprints, issuer tags, pending challenges and private
-revocations. Composite keys enforce uniqueness; the revision CAS serializes
-concurrent claims. JSON values are typed facade state, not caller-provided blobs.
-`cglb_record` has a composite primary key and a scope/bucket/deadline index. Every
-SQL operation passes through crlt plan enforcement, with explicit plan tests.
+Public `Status` is a version-two SettingsSnapshot with exact purpose
+`global-passport-status`, effective epoch, authority revision, shared cohort expiry
+and BBS public key. It contains no person or revocation list. Verification requires
+the authenticated `cglb:<scope>` ring and consumer-maintained epoch/revision floors.
+The private revocation list stays administrative. Status publication rechecks its
+observed state after signing. One csgn writer owns COSE signing/key rotation.
 
-Each successful identity mutation advances the revision. Temporary suspension
-consumes its prior warning; exact suspension retries do not advance the epoch
-again. After temporary expiry, successful issuance clears its private revocation
-entry. Permanent revocations and uniqueness reservations have no deletion API.
-Consumed challenges disappear atomically with tag binding. Pruning is bounded,
-index-backed and atomically updates the pending count. Memory storage is volatile;
-libSQL preserves bindings across restart. Storage APIs are trusted capabilities,
-not a hostile-code sandbox. An error may require reconciliation after remote
-commit; no signed passport escapes from a failed commit.
+## Development boundary and validation
 
-There is no per-person issuance time, login date, request log or policy history.
-csgn retains only its own private aggregate recovery metadata under its leaf
-contract. Global status signatures carry csgn's snapshot issuance time, never a
-member timestamp. BBS issuer/HMAC keys are immutable in this version; csgn signing
-keys can rotate through their durable leaf API.
+There is one synthetic global gate: `development::DevelopmentGate`. It needs the
+`development-gate` Cargo feature AND a development build. build.rs omits it from
+release profiles even when debug assertions and every feature are enabled.
+`Mode::Production` additionally refuses synthetic issuer catalogues, policies and
+providers at runtime. Feature unification cannot enable it in production. cgts
+contains no development gate implementation.
+
+GitHub Actions runs format, Clippy, real memory/libSQL/crypto tests, release tests,
+a hardened-release negative compilation probe, dependency-license review and the
+shared duplicate/floating-revision check. Every Corbet dependency must resolve
+once at an explicit full revision. Builds never run on the workstation.

@@ -1,36 +1,35 @@
-//! Real memory and libSQL persistence, isolation, concurrency and rollback tests.
-use cglb::{
-    Error,
-    crlt::{Config, Db, Migration},
-    storage::*,
-};
-
+//! Real per-row CAS, rollback, ABA, isolation and independent SQL-pool tests.
+use cglb::{Error, storage::*};
+use crlt::{Config, Db, Migration};
+fn key(id: &str) -> Key {
+    Key::new("challenge", id)
+}
 fn change(id: &str, deadline: u64) -> Change {
     Change {
-        key: Key::new("challenge", id),
+        key: key(id),
         record: Some(Record {
             value: vec![1, 2, 3],
             deadline,
         }),
     }
 }
+async fn database(url: &str) -> Db {
+    let mut config = Config::new(url, "");
+    config.max_connections = 4;
+    let db = Db::open(config).await.unwrap();
+    db.migrate(&[Migration::new(1, "global", SCHEMA)])
+        .await
+        .unwrap();
+    db
+}
 async fn contract(store: impl Store) {
-    let key = Key::new("challenge", "a");
-    let first = store.read(std::slice::from_ref(&key)).await.unwrap();
-    assert_eq!(first.revision, 0);
+    let first = store.read(&[key("a"), key("b")]).await.unwrap();
+    assert_eq!(first.revisions[&key("a")], 0);
     assert!(
         store
-            .compare_exchange(0, vec![change("good", 1), change("bad", u64::MAX)])
+            .compare_exchange(&first, vec![change("a", 100), change("b", u64::MAX)])
             .await
             .is_err()
-    );
-    assert_eq!(
-        store
-            .read(std::slice::from_ref(&key))
-            .await
-            .unwrap()
-            .revision,
-        0
     );
     assert!(
         store
@@ -41,164 +40,115 @@ async fn contract(store: impl Store) {
             .is_empty()
     );
     store
-        .compare_exchange(0, vec![change("a", 100), change("b", 101)])
+        .compare_exchange(&first, vec![change("a", 100), change("b", 101)])
         .await
         .unwrap();
-    let read = store.read(std::slice::from_ref(&key)).await.unwrap();
-    assert_eq!(read.records[&key].value, vec![1, 2, 3]);
     assert!(matches!(
-        store.compare_exchange(0, vec![change("c", 1)]).await,
+        store.compare_exchange(&first, vec![change("a", 100)]).await,
         Err(Error::Conflict)
     ));
+    let a = store.read(&[key("a")]).await.unwrap();
+    let b = store.read(&[key("b")]).await.unwrap();
+    store
+        .compare_exchange(&b, vec![change("b", 102)])
+        .await
+        .unwrap();
+    store
+        .compare_exchange(&a, vec![change("a", 101)])
+        .await
+        .unwrap();
     assert_eq!(
         store.list("challenge", "a", 1).await.unwrap().records.len(),
         1
     );
-    assert!(store.expired(100, 5).await.unwrap().records.is_empty());
-    assert_eq!(store.expired(101, 5).await.unwrap().records.len(), 1);
+    assert!(store.expired(101, 10).await.unwrap().records.is_empty());
+    assert_eq!(store.expired(102, 10).await.unwrap().records.len(), 1);
+    let before_delete = store.read(&[key("a")]).await.unwrap();
     store
         .compare_exchange(
-            read.revision,
+            &before_delete,
             vec![Change {
-                key: key.clone(),
+                key: key("a"),
                 record: None,
             }],
         )
         .await
         .unwrap();
-    assert!(store.read(&[key]).await.unwrap().records.is_empty());
-}
-async fn db(url: &str) -> Db {
-    let db = Db::open(Config::new(url, "")).await.unwrap();
-    let migrations = [
-        Migration::new(1, "global", SCHEMA),
-        Migration::new(2, "signing", cglb::csgn::SCHEMA),
-    ];
-    assert_eq!(db.migrate(&migrations).await.unwrap(), 2);
-    assert_eq!(db.migrate(&migrations).await.unwrap(), 0);
-    db
+    let deleted = store.read(&[key("a")]).await.unwrap();
+    assert!(deleted.records.is_empty());
+    assert!(deleted.revisions[&key("a")] > before_delete.revisions[&key("a")]);
+    store
+        .compare_exchange(&deleted, vec![change("a", 100)])
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .compare_exchange(&before_delete, vec![change("a", 105)])
+            .await,
+        Err(Error::Conflict)
+    ));
+    // A write cannot smuggle an unobserved key into a batch.
+    assert!(
+        store
+            .compare_exchange(&deleted, vec![change("unread", 1)])
+            .await
+            .is_err()
+    );
 }
 #[tokio::test]
-async fn memory_contract() {
+async fn memory_rows_have_independent_revisions_and_no_aba() {
     contract(MemoryStore::new("global").unwrap()).await;
 }
 #[tokio::test]
-async fn libsql_contract_indexes_reopen_and_isolation() {
+async fn sql_rows_persist_with_indexed_reads_and_no_aba() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("global.db").display());
-    let database = db(&url).await;
-    let store = LibsqlStore::new(&database, "global").unwrap();
+    let db = database(&url).await;
+    let store = LibsqlStore::new(&db, "global").unwrap();
     contract(store.clone()).await;
     store.check_query_plans().await.unwrap();
-    let other = LibsqlStore::new(&database, "community").unwrap();
     assert!(
-        other
+        LibsqlStore::new(&db, "other")
+            .unwrap()
             .list("challenge", "", 10)
             .await
             .unwrap()
             .records
             .is_empty()
     );
-    assert!(other.expired(1000, 10).await.unwrap().records.is_empty());
+    let before = store.read(&[key("a")]).await.unwrap().revisions;
     drop(store);
-    drop(database);
-    let reopened = Db::open(Config::new(url, "")).await.unwrap();
-    reopened
-        .migrate(&[
-            Migration::new(1, "global", SCHEMA),
-            Migration::new(2, "signing", cglb::csgn::SCHEMA),
-        ])
-        .await
-        .unwrap();
-    let store = LibsqlStore::new(&reopened, "global").unwrap();
-    assert_eq!(
-        store.list("challenge", "", 10).await.unwrap().records.len(),
-        1
-    );
+    drop(db);
+    let db = database(&url).await;
+    let store = LibsqlStore::new(&db, "global").unwrap();
+    assert_eq!(before, store.read(&[key("a")]).await.unwrap().revisions);
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn independent_pools_cannot_commit_the_same_revision() {
+async fn unrelated_pools_both_commit_but_same_person_has_one_winner() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("race.db").display());
-    let a = db(&url).await;
-    let b = Db::open(Config::new(url, "")).await.unwrap();
-    b.migrate(&[
-        Migration::new(1, "global", SCHEMA),
-        Migration::new(2, "signing", cglb::csgn::SCHEMA),
-    ])
-    .await
-    .unwrap();
-    let a = LibsqlStore::new(&a, "global").unwrap();
-    let b = LibsqlStore::new(&b, "global").unwrap();
+    let db_a = database(&url).await;
+    let db_b = database(&url).await;
+    let a = LibsqlStore::new(&db_a, "global").unwrap();
+    let b = LibsqlStore::new(&db_b, "global").unwrap();
+    let ra = a.read(&[key("a")]).await.unwrap();
+    let rb = b.read(&[key("b")]).await.unwrap();
     let (x, y) = tokio::join!(
-        a.compare_exchange(0, vec![change("a", 1)]),
-        b.compare_exchange(0, vec![change("b", 1)])
+        a.compare_exchange(&ra, vec![change("a", 100)]),
+        b.compare_exchange(&rb, vec![change("b", 100)])
+    );
+    assert!(x.is_ok() && y.is_ok());
+    let ra = a.read(&[key("a")]).await.unwrap();
+    let rb = b.read(&[key("a")]).await.unwrap();
+    let (x, y) = tokio::join!(
+        a.compare_exchange(&ra, vec![change("a", 101)]),
+        b.compare_exchange(&rb, vec![change("a", 102)])
     );
     assert_eq!(usize::from(x.is_ok()) + usize::from(y.is_ok()), 1);
-    assert!(matches!(x, Err(Error::Conflict)) || matches!(y, Err(Error::Conflict)));
-    assert_eq!(a.list("challenge", "", 10).await.unwrap().records.len(), 1);
-}
-#[tokio::test]
-async fn failed_batch_rolls_back_every_change_and_revision() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = db(&format!(
-        "file://{}",
-        dir.path().join("rollback.db").display()
-    ))
-    .await;
-    let store = LibsqlStore::new(&database, "global").unwrap();
-    assert!(
-        store
-            .compare_exchange(0, vec![change("valid", 1), change("overflow", u64::MAX)])
-            .await
-            .is_err()
-    );
-    let read = store.list("challenge", "", 10).await.unwrap();
-    assert_eq!(read.revision, 0);
-    assert!(read.records.is_empty());
-    store
-        .compare_exchange(0, vec![change("valid", 1)])
+    let writer = db_a.community("global").unwrap().tx().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), a.read(&[key("b")]))
         .await
-        .unwrap();
-}
-#[tokio::test]
-async fn optional_real_turso() {
-    let (Ok(url), Ok(token)) = (std::env::var("TURSO_URL"), std::env::var("TURSO_TOKEN")) else {
-        eprintln!("SKIP live Turso: both environment credentials are required");
-        return;
-    };
-    if url.is_empty() || token.is_empty() {
-        eprintln!("SKIP live Turso: empty credential");
-        return;
-    }
-    let database = Db::open(Config::new(url, token)).await.unwrap();
-    database
-        .migrate(&[
-            Migration::new(1, "global", SCHEMA),
-            Migration::new(2, "signing", cglb::csgn::SCHEMA),
-        ])
-        .await
-        .unwrap();
-    use cglb::cpsd::rand::RngCore;
-    let scope = format!("test-{:016x}", cglb::cpsd::rand::rngs::OsRng.next_u64());
-    let store = LibsqlStore::new(&database, &scope).unwrap();
-    contract(store.clone()).await;
-    store.check_query_plans().await.unwrap();
-    let rows = store.list("challenge", "", 10).await.unwrap();
-    store
-        .compare_exchange(
-            rows.revision,
-            rows.records
-                .into_keys()
-                .map(|key| Change { key, record: None })
-                .collect(),
-        )
-        .await
-        .unwrap();
-    database
-        .community(scope)
         .unwrap()
-        .execute("DELETE FROM cglb_revision WHERE singleton = 1", ())
-        .await
         .unwrap();
+    drop(writer);
 }
