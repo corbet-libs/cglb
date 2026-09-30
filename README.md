@@ -29,3 +29,73 @@ policy and identity decisions stay in this FSL facade. Wallet passkey
 authentication and throttling belong to the service composition using cpky/cthl;
 they are not reimplemented here. cvch is a community voucher, outside the global
 catalogue. No GPL/AGPL-only dependency is permitted.
+
+## Service API
+
+- `Global::open` binds the fixed global scope, BBS issuer, HMAC key and durable
+  `csgn::PersistentSigner`. Existing state rejects changed BBS/HMAC keys.
+- `install_policy` verifies a COSE settings snapshot containing the local typed
+  `Policy` format against a service-configured authority ring. Integrating that
+  payload with cplc's policy publisher remains a service adapter responsibility.
+- `run_gate` executes a trusted `GlobalGate` implementation and records only its
+  result and HMAC reservation. `development::DevelopmentGate` requires the
+  non-default `development-gate` feature and `Mode::Development`.
+- `challenge` and `issue` drive cpsd blind issuance. The holder uses cpsd
+  `request_issue`, `PendingIssuance::finish`, and `PresentationRequest::for_epoch`.
+- `warn`, `suspend`, and paginated private `revocations` manage current suspension
+  state. `signed_status` publishes a COSE epoch view; `Status::verify` requires
+  the consumer's trusted ring and epoch/revision minima.
+- `rotate_signing_key` delegates durable COSE rotation to csgn. `key_ring` and
+  `issuer_public_key` expose only public material. `prune_challenges` releases
+  expired pending capacity in bounded batches.
+
+Use an opaque service-assigned `Subject`; authentication and authorization happen
+before these calls. `Limits` explicitly bounds nonce lifetime and pending count.
+The caller supplies authoritative Unix-second times and a cryptographic RNG.
+Never use the deterministic seeds from tests in a service.
+
+Install the complete service migration history before opening adapters:
+
+```rust,no_run
+use cglb::{crlt::{Config, Db, Migration}, csgn, storage};
+# async fn example(url: String, token: String) -> Result<(), Box<dyn std::error::Error>> {
+let db = Db::open(Config::new(url, token)).await?;
+db.migrate(&[
+    Migration::new(1, "global", storage::SCHEMA),
+    Migration::new(2, "signing", csgn::SCHEMA),
+]).await?;
+let identities = storage::LibsqlStore::new(&db, "global")?;
+let signing = csgn::LibsqlStore::new(db.community("global")?);
+identities.check_query_plans().await?;
+signing.check_query_plans().await?;
+# Ok(())
+# }
+```
+
+Use a physically separate global database. `community_id` is the immutable global
+namespace, not a community identifier received from a wallet. Keys come from the
+service secret store. One csgn writer serializes signing and ring publication.
+Do not enable SQL/HTTP debug logging of inputs.
+
+## Validation and remaining boundaries
+
+GitHub Actions runs stable Rust formatting, Clippy with warnings denied, tests for
+both the production default and opt-in development gate, and resolved dependency
+license/pin checks. Real memory and local libSQL tests cover blind issuance and
+proofs, uniqueness/tag continuity, shared expiry, replay, malformed requests,
+suspension and epochs, COSE rotation, restart, conflicts, rollback, namespace
+isolation, query plans and pending-capacity cleanup. An independent HMAC vector
+checks framing and gate/scope separation. Cargo is never run on the workstation.
+
+`optional_real_turso` prints a skip unless both `TURSO_URL` and `TURSO_TOKEN` are
+nonempty. It migrates a disposable database and cleans up synthetic rows. Never
+supply credentials in public CI or commit them. Local tests do not establish a
+live Turso result.
+
+Real global gate providers, service HTTP/MCP routing, wallet passkeys, warning
+transport, verified legal-order intake and freshness distribution are outside this
+library. cpsd has no private individual accumulator revocation yet: suspension
+bumps the entire epoch and old passports fail once verifiers refresh. Public
+status deliberately contains no individual revocation entries. BBS issuer and
+HMAC-key rotation require a future explicit migration protocol; reopening with
+changed keys fails closed. No cryptographic security certification is claimed.

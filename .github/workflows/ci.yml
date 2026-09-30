@@ -1,14 +1,15 @@
 name: ci
-
 on:
   push:
     branches: ["**"]
   pull_request:
-
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: 2
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -19,7 +20,25 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: rustc --version
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - name: Resolve first lockfile on CI
+        run: test -f Cargo.lock || cargo generate-lockfile
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked -- --nocapture
+      - run: cargo test --locked --all-features -- --nocapture
+      - name: Review dependency licenses and pins
+        run: |
+          cargo metadata --locked --format-version 1 > dependency-metadata.json
+          node .github/check-licenses.mjs
+          node .github/check-pins.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cargo-lock
+          path: |
+            Cargo.lock
+            dependency-metadata.json

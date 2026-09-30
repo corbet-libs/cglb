@@ -75,3 +75,37 @@ cpsd. FSL-1.1-ALv2; no GPL/AGPL-only dependency; never publish to a registry.
 Tests and format/Clippy checks run only in GitHub Actions. Live Turso tests run
 only when both TURSO_URL and TURSO_TOKEN are nonempty, with a disposable database
 and no credentials in the repository or public CI.
+
+## Concrete API and storage layout
+
+`Global<S, K>` takes a cglb `storage::Store` and csgn `Store` through a
+`PersistentSigner`. `GlobalGate` is the minimal future-provider seam; the shipped
+`DevelopmentGate` is opt-in only. `Policy` is a strict version-one JSON payload in
+a csgn `SettingsSnapshot`; the caller selects its trusted authority ring. It must
+cover the entire common inclusive expiry with its exclusive COSE validity. Exact
+policy retries are idempotent; other replacements advance both revision and the
+current effective epoch. Pending issuance from an older epoch becomes unusable.
+
+The tables are `cglb_revision` (one scope revision), `cglb_record` (current typed
+records), and the unmodified `csgn_state` leaf schema. Record buckets are metadata,
+accounts, uniqueness fingerprints, issuer tags, pending challenges and private
+revocations. Composite keys enforce uniqueness; the revision CAS serializes
+concurrent claims. JSON values are typed facade state, not caller-provided blobs.
+`cglb_record` has a composite primary key and a scope/bucket/deadline index. Every
+SQL operation passes through crlt plan enforcement, with explicit plan tests.
+
+Each successful identity mutation advances the revision. Temporary suspension
+consumes its prior warning; exact suspension retries do not advance the epoch
+again. After temporary expiry, successful issuance clears its private revocation
+entry. Permanent revocations and uniqueness reservations have no deletion API.
+Consumed challenges disappear atomically with tag binding. Pruning is bounded,
+index-backed and atomically updates the pending count. Memory storage is volatile;
+libSQL preserves bindings across restart. Storage APIs are trusted capabilities,
+not a hostile-code sandbox. An error may require reconciliation after remote
+commit; no signed passport escapes from a failed commit.
+
+There is no per-person issuance time, login date, request log or policy history.
+csgn retains only its own private aggregate recovery metadata under its leaf
+contract. Global status signatures carry csgn's snapshot issuance time, never a
+member timestamp. BBS issuer/HMAC keys are immutable in this version; csgn signing
+keys can rotate through their durable leaf API.
