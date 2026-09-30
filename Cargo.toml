@@ -15,7 +15,7 @@ default = []
 development-gate = []
 
 [dependencies]
-cpsd = { git = "https://github.com/corbet-foss/cpsd", rev = "5aa7580b26faf10fe7f18bb041b08b5c50f49278", default-features = false }
+cpsd = { git = "https://github.com/corbet-foss/cpsd", rev = "5b2d5d9970d4beae171d85e478d06ba0b29e1992", default-features = false }
 crlt = { git = "https://github.com/corbet-foss/crlt", rev = "6b94dacd7fa04aa8847c62c6471a1fc5c0f6c9dc" }
 csgn = { git = "https://github.com/corbet-foss/csgn", rev = "d7203f310c3c129c3f67ef4ef3e34ccf0ae8c93b", features = ["libsql"] }
 hmac = "0.13"
@@ -23,7 +23,7 @@ sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-zeroize = "=1.8.2"
+zeroize = "1.9"
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std_rng"] }

@@ -739,7 +739,7 @@ dependencies = [
 [[package]]
 name = "cpsd"
 version = "0.0.0"
-source = "git+https://github.com/corbet-foss/cpsd?rev=5aa7580b26faf10fe7f18bb041b08b5c50f49278#5aa7580b26faf10fe7f18bb041b08b5c50f49278"
+source = "git+https://github.com/corbet-foss/cpsd?rev=5b2d5d9970d4beae171d85e478d06ba0b29e1992#5b2d5d9970d4beae171d85e478d06ba0b29e1992"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -749,6 +749,7 @@ dependencies = [
  "bbs_plus",
  "blake2",
  "bulletproofs_plus_plus",
+ "csgn",
  "dock_crypto_utils",
  "getrandom 0.2.17",
  "js-sys",
@@ -4277,9 +4278,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.8.2"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
  "zeroize_derive",
 ]
