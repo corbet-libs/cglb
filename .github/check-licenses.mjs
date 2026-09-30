@@ -25,6 +25,7 @@ const allowed = new Set([
   "LGPL-3.0-only WITH LGPL-3.0-linking-exception",
   "MIT",
   "MIT OR Apache-2.0",
+  "MIT OR Apache-2.0 OR BSD-1-Clause", // fiat-crypto: select MIT.
   "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
   "MIT OR Apache-2.0 WITH LLVM-exception",
   "MIT OR Zlib OR Apache-2.0",
