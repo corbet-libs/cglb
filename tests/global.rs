@@ -123,6 +123,36 @@ async fn issue<S: Store, K: csgn::Store>(
     );
     pending.finish(&blind).unwrap()
 }
+async fn present_trusted(
+    passport: &cpsd::Passport,
+    rng: &mut StdRng,
+    request: &cpsd::PresentationRequest,
+) -> std::result::Result<cpsd::Presentation, cpsd::Error> {
+    let mut signer = csgn::PersistentSigner::create(
+        csgn::MemoryStore::default(),
+        "test-community",
+        csgn::SecretKey::from_seed(&mut [8; 32]),
+        0,
+        5000,
+    )
+    .await
+    .unwrap();
+    let signed = signer
+        .sign(
+            csgn::Kind::Credential,
+            &request.to_bytes(),
+            0,
+            request.now() + 1,
+        )
+        .await
+        .unwrap();
+    let expected = cpsd::AuthenticatedCommunity::from_authenticated_origin(
+        request.community().clone(),
+        signer.key_ring().unwrap().clone(),
+    );
+    passport.present(rng, &expected, &signed, request.now())
+}
+
 async fn scenario<S: Store, K: csgn::Store>(store: S, key_store: K) {
     let scope = store.scope().to_owned();
     let mut global = make(store, key_store, 20).await;
@@ -165,7 +195,9 @@ async fn scenario<S: Store, K: csgn::Store>(store: S, key_store: K) {
         1000,
     )
     .unwrap();
-    let proof = passport.present(&mut rng, &request).unwrap();
+    let proof = present_trusted(&passport, &mut rng, &request)
+        .await
+        .unwrap();
     let pseudonym = cpsd::verify(
         &mut rng,
         &[global.issuer_public_key().clone()],
@@ -173,7 +205,7 @@ async fn scenario<S: Store, K: csgn::Store>(store: S, key_store: K) {
         &proof,
     )
     .unwrap();
-    let again = renewed.present(&mut rng, &request).unwrap();
+    let again = present_trusted(&renewed, &mut rng, &request).await.unwrap();
     assert_eq!(
         pseudonym,
         cpsd::verify(
@@ -265,7 +297,11 @@ async fn scenario<S: Store, K: csgn::Store>(store: S, key_store: K) {
         1000,
     )
     .unwrap();
-    assert!(passport.present(&mut rng, &fresh_request).is_err());
+    assert!(
+        present_trusted(&passport, &mut rng, &fresh_request)
+            .await
+            .is_err()
+    );
     assert_eq!(global.revocations("", 10).await.unwrap().len(), 1);
     let signed = global.signed_status(201, 401).await.unwrap();
     let status = Status::verify(&signed, global.key_ring().unwrap(), &scope, 2, 1, 250).unwrap();
