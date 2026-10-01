@@ -148,10 +148,24 @@ impl Store for MemoryStore {
         )
     }
     async fn expired(&self, now: u64, limit: u32) -> Result<ReadSet> {
-        self.select(
-            |k, r| k.bucket == "challenge" && r.deadline < now,
-            limit as usize,
-        )
+        let state = self.state.lock().map_err(|_| Error::Storage)?;
+        let mut expired: Vec<_> = state
+            .iter()
+            .filter_map(|(key, (revision, record))| {
+                record.as_ref()
+                    .filter(|record| key.bucket == "challenge" && record.deadline < now)
+                    .map(|record| (key, *revision, record))
+            })
+            .collect();
+        expired.sort_unstable_by(|(left_key, _, left), (right_key, _, right)| {
+            (left.deadline, left_key).cmp(&(right.deadline, right_key))
+        });
+        let mut read = ReadSet::default();
+        for (key, revision, record) in expired.into_iter().take(limit as usize) {
+            read.revisions.insert(key.clone(), revision);
+            read.records.insert(key.clone(), record.clone());
+        }
+        Ok(read)
     }
     async fn compare_exchange(&self, expected: &ReadSet, changes: Vec<Change>) -> Result<()> {
         validate(expected, &changes)?;

@@ -125,3 +125,8 @@ Public status publication reuses `cbcn::document::Cache<Status>` and the existin
 cache or generic HTTP cache because it preserves the original signed bytes and
 checks issuer, kind, lifetime and policy floors. `Global::public_status` also
 fences against the durable current version; private revocations are never cached.
+
+The volatile and SQL stores select bounded expired challenges by deadline and
+then key, so a lexically early newer row cannot displace an older expired row.
+Real parity tests use opposing key/deadline order and a non-challenge row; imported
+SQLite type corruption and exhausted revisions must refuse without partial writes.
