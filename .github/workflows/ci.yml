@@ -54,6 +54,17 @@ jobs:
         cache-on-failure: true
     - run: rustc --version
     - run: cargo fmt --all --check
+      id: fmt
+    - name: Retain the exact runner formatting patch
+      if: failure() && steps.fmt.outcome == 'failure'
+      run: 'cargo fmt --all
+
+        git diff --binary > "$RUNNER_TEMP/rustfmt.patch"'
+    - uses: actions/upload-artifact@v4
+      if: failure() && steps.fmt.outcome == 'failure'
+      with:
+        name: rustfmt-patch
+        path: ${{ runner.temp }}/rustfmt.patch
     - run: node --test .github/check-pins.test.mjs
     - run: cargo metadata --locked --format-version 1 > dependency-metadata.json
     - run: node .github/check-pins.mjs dependency-metadata.json
@@ -133,7 +144,9 @@ jobs:
     - name: Export exact line and branch locations
       run: cargo llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --lcov --output-path coverage.lcov
     - name: Require complete line and branch coverage
-      run: python3 .github/check-coverage.py coverage.json
+      run: 'python3 .github/test-source-coverage.py
+
+        python3 .github/check-source-coverage.py coverage.lcov coverage.json'
     - uses: actions/upload-artifact@v4
       if: always()
       with:
