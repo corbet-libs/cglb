@@ -373,12 +373,14 @@ async fn beacon_refuses_signed_documents_with_invalid_owner_payloads() {
     let (mut global, _, _, _) = make().await;
     let bytes = global.public_status(100, 2 * DAY).await.unwrap();
     let original = Status::verify(&bytes, global.key_ring().unwrap(), "global", 1, 1, 100).unwrap();
-    let mut signer = csgn::Signer::new(
+    let mut signer = csgn::PersistentSigner::create(
+        csgn::MemoryStore::default(),
         "cglb:global",
         csgn::SecretKey::from_seed(&mut [44; 32]),
         0,
         30 * DAY,
     )
+    .await
     .unwrap();
     for field in ["version", "purpose", "scope", "cohort", "issuer-key"] {
         let mut invalid = original.clone();
@@ -396,10 +398,11 @@ async fn beacon_refuses_signed_documents_with_invalid_owner_payloads() {
                 0,
                 2 * DAY,
             )
+            .await
             .unwrap();
         let mut cache = cbcn::document::Cache::<Status>::default();
         assert!(
-            cache.install(signer.key_ring(), bytes, 100).is_err(),
+            cache.install(signer.key_ring().unwrap(), bytes, 100).is_err(),
             "{field}"
         );
         assert!(matches!(cache.current(100), Err(cbcn::Error::Unavailable)));
