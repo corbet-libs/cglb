@@ -130,6 +130,8 @@ jobs:
     - name: Measure real native round trips and failure paths
       run: cargo llvm-cov --locked --workspace --all-features --branch --no-cfg-coverage --no-cfg-coverage-nightly
         --ignore-filename-regex '/tests/' --json --output-path coverage.json
+    - name: Export exact line and branch locations
+      run: cargo llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --lcov --output-path coverage.lcov
     - name: Require complete line and branch coverage
       run: python3 .github/check-coverage.py coverage.json
     - uses: actions/upload-artifact@v4
@@ -138,6 +140,7 @@ jobs:
         name: coverage
         path: |-
           coverage.json
+          coverage.lcov
           Cargo.lock
           resolver.txt
         retention-days: 7
