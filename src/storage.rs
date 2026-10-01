@@ -152,7 +152,8 @@ impl Store for MemoryStore {
         let mut expired: Vec<_> = state
             .iter()
             .filter_map(|(key, (revision, record))| {
-                record.as_ref()
+                record
+                    .as_ref()
                     .filter(|record| key.bucket == "challenge" && record.deadline < now)
                     .map(|record| (key, *revision, record))
             })
