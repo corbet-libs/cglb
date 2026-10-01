@@ -546,7 +546,7 @@ dependencies = [
 [[package]]
 name = "cbcn"
 version = "0.1.0"
-source = "git+https://github.com/corbet-foss/cbcn?branch=main#491481ee25a7467be3727b73d1335cbb46656985"
+source = "git+https://github.com/corbet-foss/cbcn?branch=main#8f67fb43038bd2ca3acfddc40a9026f8f0f01182"
 dependencies = [
  "csgn",
  "serde",
@@ -595,6 +595,7 @@ dependencies = [
  "crlt",
  "csgn",
  "hmac 0.13.0",
+ "libsql",
  "rand 0.8.8",
  "serde",
  "serde_json",
