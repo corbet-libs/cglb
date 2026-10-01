@@ -26,7 +26,7 @@ Reviewed GitHub main, upstream documentation and crates.io on 2026-09-30:
 
 The selected leaves are LGPL-3.0-only WITH LGPL-3.0-linking-exception. Gate,
 policy and identity decisions stay in this FSL facade. Wallet passkey
-authentication and throttling belong to the service composition using cpky/cthl;
+authentication and throttling belong to the service composition using ckyh/cthl;
 they are not reimplemented here. cvch is a community voucher, outside the global
 catalogue. No GPL/AGPL-only dependency is permitted.
 
