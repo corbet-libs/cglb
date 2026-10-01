@@ -19,18 +19,21 @@ jobs:
         persist-credentials: false
     - uses: dtolnay/rust-toolchain@stable
     - name: Resolve one fresh dependency snapshot
-      run: |-
-        cargo update
+      run: 'cargo update
+
         rustc --version > resolver.txt
+
         cargo --version >> resolver.txt
+
         date -u +%FT%TZ >> resolver.txt
-        sha256sum Cargo.lock >> resolver.txt
+
+        sha256sum Cargo.lock >> resolver.txt'
     - uses: actions/upload-artifact@v4
       with:
         name: resolved-lock
-        path: |-
-          Cargo.lock
-          resolver.txt
+        path: 'Cargo.lock
+
+          resolver.txt'
         retention-days: 7
   check:
     runs-on: ubuntu-latest
@@ -60,27 +63,24 @@ jobs:
     - run: cargo test --locked --all-features -- --nocapture
     - run: cargo test --locked --release --all-features
     - name: Prove the development gate is absent even in hardened release builds
-      run: |
-        mkdir -p examples
-        cp .ci/development_gate_probe.rs examples/development_gate_probe.rs
-        if CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo check --locked --release --all-features --example development_gate_probe > release-probe.log 2>&1; then
-          echo "The development gate must not compile in release builds"
-          exit 1
-        fi
-        cat release-probe.log
-        grep -F 'could not find `development` in `cglb`' release-probe.log
+      run: "mkdir -p examples\ncp .ci/development_gate_probe.rs examples/development_gate_probe.rs\nif CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo check --locked --release --all-features --example development_gate_probe > release-probe.log 2>&1; then\n  echo \"The development gate must not compile in release builds\"\n  exit 1\nfi\ncat release-probe.log\ngrep -F 'could not find `development` in `cglb`' release-probe.log\n"
     - name: Review dependency licenses and pins
-      run: |
-        cargo metadata --locked --format-version 1 > dependency-metadata.json
+      run: 'cargo metadata --locked --format-version 1 > dependency-metadata.json
+
         node .github/check-licenses.mjs
+
         node .github/check-pins.mjs dependency-metadata.json
+
+        '
     - uses: actions/upload-artifact@v4
       if: always()
       with:
         name: cargo-lock
-        path: |
-          Cargo.lock
+        path: 'Cargo.lock
+
           dependency-metadata.json
+
+          '
     needs:
     - resolve
   dependency-policy:
@@ -121,15 +121,15 @@ jobs:
     - uses: Swatinem/rust-cache@v2
       with:
         prefix-key: coverage
+        cache-on-failure: true
     - uses: taiki-e/install-action@v2
       with:
         tool: cargo-llvm-cov
-    - run: |-
-        rustc --version
-        cargo llvm-cov --version
+    - run: 'rustc --version
+
+        cargo llvm-cov --version'
     - name: Measure real native round trips and failure paths
-      run: cargo llvm-cov --locked --workspace --all-features --branch --no-cfg-coverage --no-cfg-coverage-nightly
-        --ignore-filename-regex '/tests/' --json --output-path coverage.json
+      run: cargo llvm-cov --locked --workspace --all-features --branch --no-cfg-coverage --no-cfg-coverage-nightly --ignore-filename-regex '/tests/' --json --output-path coverage.json
     - name: Export exact line and branch locations
       run: cargo llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --lcov --output-path coverage.lcov
     - name: Require complete line and branch coverage
@@ -138,11 +138,13 @@ jobs:
       if: always()
       with:
         name: coverage
-        path: |-
-          coverage.json
+        path: 'coverage.json
+
           coverage.lcov
+
           Cargo.lock
-          resolver.txt
+
+          resolver.txt'
         retention-days: 7
 'on':
   push:
