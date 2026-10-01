@@ -113,3 +113,9 @@ expiries and status signatures use UTC days; short challenge deadlines retain
 seconds for replay/capacity bounds. Status is a purpose-bound SettingsSnapshot.
 The development gate is absent in release builds, including hardened builds.
 See [the current contract](docs/CONTRACT.md) for migration and provider obligations.
+
+## Continuous verification
+
+Dependency updates follow main and are tested against one CI-resolved lockfile.
+Line and branch coverage target 100%; failures remain blocking. See
+[the coverage contract](docs/COVERAGE.md) for measurement and exclusions.
