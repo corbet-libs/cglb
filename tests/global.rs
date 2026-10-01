@@ -1062,7 +1062,13 @@ async fn post_crypto_storage_failure_never_releases_an_uncommitted_passport() {
             .unwrap();
         let who = subject("member");
         global
-            .run_gate(&DevelopmentGate::new(COHORT), &who, b"unique", 100, &check())
+            .run_gate(
+                &DevelopmentGate::new(COHORT),
+                &who,
+                b"unique",
+                100,
+                &check(),
+            )
             .await
             .unwrap();
         let mut rng = StdRng::seed_from_u64(73);
@@ -1076,21 +1082,32 @@ async fn post_crypto_storage_failure_never_releases_an_uncommitted_passport() {
         let trigger = if action == "owner-revision" {
             "CREATE TRIGGER refuse_commit AFTER INSERT ON cpsd_issuer_tags BEGIN UPDATE cglb_record SET revision = revision + 1 WHERE community_id = 'test' AND bucket = 'account' AND entry_key = 'member'; END;".to_owned()
         } else {
-            format!("CREATE TRIGGER refuse_commit BEFORE UPDATE ON cglb_record WHEN NEW.bucket = 'challenge' AND NEW.value IS NULL BEGIN SELECT RAISE({action}); END;")
+            format!(
+                "CREATE TRIGGER refuse_commit BEFORE UPDATE ON cglb_record WHEN NEW.bucket = 'challenge' AND NEW.value IS NULL BEGIN SELECT RAISE({action}); END;"
+            )
         };
         raw.execute_batch(&trigger).await.unwrap();
-        let result = global.issue(&mut rng, &auth, &challenge, &request, 101).await;
+        let result = global
+            .issue(&mut rng, &auth, &challenge, &request, 101)
+            .await;
         if action == "ABORT, 'commit refused'" {
             assert!(matches!(result, Err(Error::Storage)));
         } else {
             assert!(matches!(result, Err(Error::Conflict)));
         }
-        raw.execute_batch("DROP TRIGGER refuse_commit").await.unwrap();
+        raw.execute_batch("DROP TRIGGER refuse_commit")
+            .await
+            .unwrap();
         assert!(matches!(
-            global.issue(&mut rng, &auth, &challenge, &request, 102).await,
+            global
+                .issue(&mut rng, &auth, &challenge, &request, 102)
+                .await,
             Err(Error::Challenge)
         ));
-        assert_eq!(store.list("challenge", "", 10).await.unwrap().records.len(), 1);
+        assert_eq!(
+            store.list("challenge", "", 10).await.unwrap().records.len(),
+            1
+        );
         assert_eq!(global.prune_challenges(151, 10).await.unwrap(), 1);
         issue(&global, &mut rng, &who, &secret, 152).await;
     }
