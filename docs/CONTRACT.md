@@ -93,7 +93,7 @@ Temporary suspension requires a warning; permanent legal/self-ban suspension has
 no reversal API. Suspensions atomically update private state and the effective
 epoch. cpsd cannot privately prove individual nonrevocation, so the new epoch
 invalidates the old global cohort once verifiers adopt it. Eligible people renew;
-suspended people cannot. cmnt requires a fresh presentation at credential renewal,
+suspended people cannot. cmty requires a fresh presentation at credential renewal,
 against the current authenticated global epoch. Offline credentials retain their
 bounded lifetime; this is not an offline revocation accumulator.
 
