@@ -143,10 +143,12 @@ jobs:
       run: cargo llvm-cov --locked --workspace --all-features --branch --no-cfg-coverage --no-cfg-coverage-nightly --ignore-filename-regex '/tests/' --json --output-path coverage.json
     - name: Export exact line and branch locations
       run: cargo llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --lcov --output-path coverage.lcov
+    - name: Cross-check emitted line inventory independently
+      run: cargo llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --text --output-path coverage.txt
     - name: Require complete line and branch coverage
       run: 'python3 .github/test-source-coverage.py
 
-        python3 .github/check-source-coverage.py coverage.lcov coverage.json'
+        python3 .github/check-source-coverage.py coverage.lcov coverage.json coverage.txt'
     - uses: actions/upload-artifact@v4
       if: always()
       with:
@@ -154,6 +156,8 @@ jobs:
         path: 'coverage.json
 
           coverage.lcov
+
+          coverage.txt
 
           Cargo.lock
 
