@@ -15,9 +15,9 @@ default = []
 development-gate = []
 
 [dependencies]
-cpsd = { git = "https://github.com/corbet-foss/cpsd", rev = "b60f2bbff04dbe0a93cb41992006b06dafc798c3", default-features = false, features = ["storage"] }
-crlt = { git = "https://github.com/corbet-foss/crlt", rev = "6b94dacd7fa04aa8847c62c6471a1fc5c0f6c9dc" }
-csgn = { git = "https://github.com/corbet-foss/csgn", rev = "d7203f310c3c129c3f67ef4ef3e34ccf0ae8c93b", features = ["libsql"] }
+cpsd = { git = "https://github.com/corbet-foss/cpsd", rev = "0d314b97bce9aeaffb5424159e8255ce34acee1e", default-features = false, features = ["storage"] }
+crlt = { git = "https://github.com/corbet-foss/crlt", rev = "80dc046d6ab53b3ea530c45bf3d7038c8b2c61b2" }
+csgn = { git = "https://github.com/corbet-foss/csgn", rev = "3ea958b522a15fecf65630aae1f9944135105497", features = ["libsql"] }
 hmac = "0.13"
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }

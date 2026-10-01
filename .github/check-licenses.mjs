@@ -3,6 +3,10 @@
 import { readFileSync } from 'node:fs';
 
 const allowed = new Set([
+  "MIT OR Apache-2.0 OR Zlib",
+  "CC0-1.0 OR MIT-0 OR Apache-2.0",
+  "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
+  "ISC AND (Apache-2.0 OR ISC)",
   "(MIT OR Apache-2.0) AND Unicode-3.0",
   "0BSD",
   "0BSD OR MIT OR Apache-2.0",
