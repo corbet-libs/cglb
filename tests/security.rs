@@ -402,7 +402,9 @@ async fn beacon_refuses_signed_documents_with_invalid_owner_payloads() {
             .unwrap();
         let mut cache = cbcn::document::Cache::<Status>::default();
         assert!(
-            cache.install(signer.key_ring().unwrap(), bytes, 100).is_err(),
+            cache
+                .install(signer.key_ring().unwrap(), bytes, 100)
+                .is_err(),
             "{field}"
         );
         assert!(matches!(cache.current(100), Err(cbcn::Error::Unavailable)));
