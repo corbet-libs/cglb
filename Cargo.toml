@@ -27,7 +27,7 @@ thiserror = "2"
 zeroize = "1.9"
 
 [dev-dependencies]
-rand = { version = "0.8", features = ["std_rng"] }
+rand = { version = "0.10", features = ["std_rng"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tempfile = "3"
 
