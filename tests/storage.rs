@@ -321,6 +321,12 @@ async fn imported_unindexed_expiry_schema_is_rejected_by_the_actual_planner() {
         .execute_batch("ANALYZE")
         .await
         .unwrap();
+    let db = Db::open(Config::new(format!("file://{}", path.display()), ""))
+        .await
+        .unwrap();
+    db.migrate(&[Migration::new(1, "legacy rowid import", &schema)])
+        .await
+        .unwrap();
     let store = LibsqlStore::new(&db, "global").unwrap();
     assert!(matches!(
         store.check_query_plans().await,
