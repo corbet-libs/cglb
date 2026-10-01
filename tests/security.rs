@@ -847,9 +847,14 @@ async fn reserved_provider_names_and_mismatched_replayed_receipts_refuse() {
             Err(Error::DevelopmentDisabled)
         ));
     }
-    for gate in [NamedProvider("phone", "other"), NamedProvider("unknown", "sms")] {
+    for gate in [
+        NamedProvider("phone", "other"),
+        NamedProvider("unknown", "sms"),
+    ] {
         assert!(matches!(
-            global.run_gate(&gate, &subject("member"), b"input", 100, &check()).await,
+            global
+                .run_gate(&gate, &subject("member"), b"input", 100, &check())
+                .await,
             Err(Error::GateDisabled)
         ));
     }
@@ -964,15 +969,47 @@ async fn cached_status_refuses_imported_owner_version_rollbacks() {
     let (mut global, store, _, _) = make().await;
     let original = global.public_status(100, 2 * DAY).await.unwrap();
     let key = storage::Key::new("meta", "state");
-    let baseline = store.read(std::slice::from_ref(&key)).await.unwrap().records[&key].clone();
+    let baseline = store
+        .read(std::slice::from_ref(&key))
+        .await
+        .unwrap()
+        .records[&key]
+        .clone();
     for field in ["epoch", "revision"] {
         let mut state: serde_json::Value = serde_json::from_slice(&baseline.value).unwrap();
         state["policy"][field] = serde_json::json!(0);
         let read = store.read(std::slice::from_ref(&key)).await.unwrap();
-        store.compare_exchange(&read, vec![storage::Change { key: key.clone(), record: Some(storage::Record { value: serde_json::to_vec(&state).unwrap(), deadline: 0 }) }]).await.unwrap();
-        assert!(matches!(global.public_status(100, 2 * DAY).await, Err(Error::Signature)), "{field}");
+        store
+            .compare_exchange(
+                &read,
+                vec![storage::Change {
+                    key: key.clone(),
+                    record: Some(storage::Record {
+                        value: serde_json::to_vec(&state).unwrap(),
+                        deadline: 0,
+                    }),
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                global.public_status(100, 2 * DAY).await,
+                Err(Error::Signature)
+            ),
+            "{field}"
+        );
         let read = store.read(std::slice::from_ref(&key)).await.unwrap();
-        store.compare_exchange(&read, vec![storage::Change { key: key.clone(), record: Some(baseline.clone()) }]).await.unwrap();
+        store
+            .compare_exchange(
+                &read,
+                vec![storage::Change {
+                    key: key.clone(),
+                    record: Some(baseline.clone()),
+                }],
+            )
+            .await
+            .unwrap();
         assert_eq!(global.public_status(100, 2 * DAY).await.unwrap(), original);
     }
 }
@@ -987,15 +1024,28 @@ async fn cached_publication_is_fenced_during_real_concurrent_store_writes() {
         let stop = stop.clone();
         let ready = ready.clone();
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
             ready.wait();
             runtime.block_on(async {
                 let key = storage::Key::new("meta", "state");
                 for _ in 0..100_000 {
-                    if stop.load(Ordering::Acquire) { break; }
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
                     let read = store.read(std::slice::from_ref(&key)).await.unwrap();
                     let record = read.records[&key].clone();
-                    store.compare_exchange(&read, vec![storage::Change { key: key.clone(), record: Some(record) }]).await.unwrap();
+                    store
+                        .compare_exchange(
+                            &read,
+                            vec![storage::Change {
+                                key: key.clone(),
+                                record: Some(record),
+                            }],
+                        )
+                        .await
+                        .unwrap();
                 }
             });
         })
@@ -1003,35 +1053,88 @@ async fn cached_publication_is_fenced_during_real_concurrent_store_writes() {
     ready.wait();
     let mut conflict = false;
     for _ in 0..512 {
-        if matches!(global.public_status(100, 2 * DAY).await, Err(Error::Conflict)) {
+        if matches!(
+            global.public_status(100, 2 * DAY).await,
+            Err(Error::Conflict)
+        ) {
             conflict = true;
             break;
         }
     }
     stop.store(true, Ordering::Release);
     writer.join().unwrap();
-    assert!(conflict, "a cached publication must not cross a changed store revision");
+    assert!(
+        conflict,
+        "a cached publication must not cross a changed store revision"
+    );
     global.public_status(100, 2 * DAY).await.unwrap();
 }
 
 #[tokio::test]
 async fn issuance_refuses_changed_pending_nonce_without_consuming_the_real_leaf_challenge() {
     let (global, store, _, _) = make().await;
-    global.run_gate(&Provider::default(), &subject("member"), b"input", 100, &check()).await.unwrap();
+    global
+        .run_gate(
+            &Provider::default(),
+            &subject("member"),
+            b"input",
+            100,
+            &check(),
+        )
+        .await
+        .unwrap();
     let mut rng = StdRng::seed_from_u64(903);
     let secret = cpsd::HolderSecret::generate(&mut rng);
-    let challenge = global.challenge(&mut rng, &session("member"), 100, 150).await.unwrap();
-    let (request, pending) = cpsd::request_issue(&mut rng, &secret, global.issuer_public_key(), &challenge).unwrap();
+    let challenge = global
+        .challenge(&mut rng, &session("member"), 100, 150)
+        .await
+        .unwrap();
+    let (request, pending) =
+        cpsd::request_issue(&mut rng, &secret, global.issuer_public_key(), &challenge).unwrap();
     let key = storage::Key::new("challenge", "member");
     let read = store.read(std::slice::from_ref(&key)).await.unwrap();
     let original = read.records[&key].clone();
     let mut value: serde_json::Value = serde_json::from_slice(&original.value).unwrap();
     value["nonce"] = serde_json::Value::Null;
-    store.compare_exchange(&read, vec![storage::Change { key: key.clone(), record: Some(storage::Record { value: serde_json::to_vec(&value).unwrap(), deadline: original.deadline }) }]).await.unwrap();
-    assert!(matches!(global.issue(&mut rng, &session("member"), &challenge, &request, 100).await, Err(Error::Challenge)));
+    store
+        .compare_exchange(
+            &read,
+            vec![storage::Change {
+                key: key.clone(),
+                record: Some(storage::Record {
+                    value: serde_json::to_vec(&value).unwrap(),
+                    deadline: original.deadline,
+                }),
+            }],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        global
+            .issue(&mut rng, &session("member"), &challenge, &request, 100)
+            .await,
+        Err(Error::Challenge)
+    ));
     let read = store.read(std::slice::from_ref(&key)).await.unwrap();
-    store.compare_exchange(&read, vec![storage::Change { key, record: Some(original) }]).await.unwrap();
-    let blind = global.issue(&mut rng, &session("member"), &challenge, &request, 100).await.unwrap();
+    store
+        .compare_exchange(
+            &read,
+            vec![storage::Change {
+                key,
+                record: Some(original),
+            }],
+        )
+        .await
+        .unwrap();
+    let blind = global
+        .issue(&mut rng, &session("member"), &challenge, &request, 100)
+        .await
+        .unwrap();
     pending.finish(&blind).unwrap();
-    assert!(matches!(global.issue(&mut rng, &session("member"), &challenge, &request, 100).await, Err(Error::Challenge)));
+    assert!(matches!(
+        global
+            .issue(&mut rng, &session("member"), &challenge, &request, 100)
+            .await,
+        Err(Error::Challenge)
+    ));
 }

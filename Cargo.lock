@@ -546,7 +546,7 @@ dependencies = [
 [[package]]
 name = "cbcn"
 version = "0.1.0"
-source = "git+https://github.com/corbet-foss/cbcn?branch=main#8f67fb43038bd2ca3acfddc40a9026f8f0f01182"
+source = "git+https://github.com/corbet-foss/cbcn?branch=main#53ed942cdc1439fcedbc9914cf6cc44f83020d29"
 dependencies = [
  "csgn",
  "serde",
