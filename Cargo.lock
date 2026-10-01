@@ -546,7 +546,7 @@ dependencies = [
 [[package]]
 name = "cbcn"
 version = "0.1.0"
-source = "git+https://github.com/corbet-foss/cbcn?branch=main#491481ee25a7467be3727b73d1335cbb46656985"
+source = "git+https://github.com/corbet-foss/cbcn?branch=main#8f67fb43038bd2ca3acfddc40a9026f8f0f01182"
 dependencies = [
  "csgn",
  "serde",
@@ -595,7 +595,8 @@ dependencies = [
  "crlt",
  "csgn",
  "hmac 0.13.0",
- "rand 0.8.8",
+ "libsql",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2632,7 +2633,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -2775,7 +2776,6 @@ version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
- "libc",
  "rand_chacha",
  "rand_core 0.6.4",
 ]
