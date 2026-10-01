@@ -773,45 +773,132 @@ async fn status_refuses_tampering_future_minima_and_regressing_publication_time(
 async fn open_refuses_a_real_signer_invalidated_by_a_competing_writer() {
     let keys = csgn::MemoryStore::default();
     let mut stale = csgn::PersistentSigner::create(
-        keys.clone(), "cglb:global", csgn::SecretKey::from_seed(&mut [2; 32]), 0, 30 * DAY,
-    ).await.unwrap();
+        keys.clone(),
+        "cglb:global",
+        csgn::SecretKey::from_seed(&mut [2; 32]),
+        0,
+        30 * DAY,
+    )
+    .await
+    .unwrap();
     let mut winner = csgn::PersistentSigner::open(
-        keys, "cglb:global", csgn::SecretKey::from_seed(&mut [2; 32]), 0,
-    ).await.unwrap();
-    winner.sign(csgn::Kind::SettingsSnapshot, b"winner", 0, DAY).await.unwrap();
-    assert!(stale.sign(csgn::Kind::SettingsSnapshot, b"stale", 0, DAY).await.is_err());
+        keys,
+        "cglb:global",
+        csgn::SecretKey::from_seed(&mut [2; 32]),
+        0,
+    )
+    .await
+    .unwrap();
+    winner
+        .sign(csgn::Kind::SettingsSnapshot, b"winner", 0, DAY)
+        .await
+        .unwrap();
+    assert!(
+        stale
+            .sign(csgn::Kind::SettingsSnapshot, b"stale", 0, DAY)
+            .await
+            .is_err()
+    );
     let issuance = cpsd::MemoryStore::new(cpsd::CommunityId::new(b"global").unwrap(), 2).unwrap();
-    assert!(matches!(Global::open(MemoryStore::new("global").unwrap(), issuance, issuer(), stale,
-        fingerprints(), Mode::Production, Limits { challenge_ttl: 60, pending_capacity: 2 }).await, Err(Error::Signature)));
+    assert!(matches!(
+        Global::open(
+            MemoryStore::new("global").unwrap(),
+            issuance,
+            issuer(),
+            stale,
+            fingerprints(),
+            Mode::Production,
+            Limits {
+                challenge_ttl: 60,
+                pending_capacity: 2
+            }
+        )
+        .await,
+        Err(Error::Signature)
+    ));
 }
 
 #[tokio::test]
 async fn reserved_provider_names_and_mismatched_replayed_receipts_refuse() {
     struct NamedProvider(&'static str, &'static str);
     impl GlobalGate for NamedProvider {
-        fn id(&self) -> &str { self.0 }
-        fn provider(&self) -> &str { self.1 }
-        fn development_only(&self) -> bool { false }
+        fn id(&self) -> &str {
+            self.0
+        }
+        fn provider(&self) -> &str {
+            self.1
+        }
+        fn development_only(&self) -> bool {
+            false
+        }
         async fn verify(&self, _: &CheckId, _: &Subject, _: &[u8], _: u64) -> Result<GateEvidence> {
             panic!("unauthorized external provider must not be called")
         }
     }
     let (global, store, _, _) = make().await;
-    for gate in [NamedProvider("development", "sms"), NamedProvider("phone", "cglb.test")] {
-        assert!(matches!(global.run_gate(&gate, &subject("member"), b"input", 100, &check()).await, Err(Error::DevelopmentDisabled)));
+    for gate in [
+        NamedProvider("development", "sms"),
+        NamedProvider("phone", "cglb.test"),
+    ] {
+        assert!(matches!(
+            global
+                .run_gate(&gate, &subject("member"), b"input", 100, &check())
+                .await,
+            Err(Error::DevelopmentDisabled)
+        ));
     }
-    assert!(matches!(global.run_gate(&NamedProvider("phone", "other"), &subject("member"), b"input", 100, &check()).await, Err(Error::GateDisabled)));
+    assert!(matches!(
+        global
+            .run_gate(
+                &NamedProvider("phone", "other"),
+                &subject("member"),
+                b"input",
+                100,
+                &check()
+            )
+            .await,
+        Err(Error::GateDisabled)
+    ));
     let provider = Provider::default();
     let id = check();
-    global.run_gate(&provider, &subject("member"), b"input", 100, &id).await.unwrap();
+    global
+        .run_gate(&provider, &subject("member"), b"input", 100, &id)
+        .await
+        .unwrap();
     let key = storage::Key::new("account", "member");
-    let original = store.read(std::slice::from_ref(&key)).await.unwrap().records[&key].clone();
+    let original = store
+        .read(std::slice::from_ref(&key))
+        .await
+        .unwrap()
+        .records[&key]
+        .clone();
     for field in ["provider", "valid_until"] {
         let mut value: serde_json::Value = serde_json::from_slice(&original.value).unwrap();
-        value["gates"]["phone"][field] = if field == "provider" { serde_json::json!("other") } else { serde_json::json!(99) };
+        value["gates"]["phone"][field] = if field == "provider" {
+            serde_json::json!("other")
+        } else {
+            serde_json::json!(99)
+        };
         let read = store.read(std::slice::from_ref(&key)).await.unwrap();
-        store.compare_exchange(&read, vec![storage::Change { key: key.clone(), record: Some(storage::Record { value: serde_json::to_vec(&value).unwrap(), deadline: 0 }) }]).await.unwrap();
-        assert!(matches!(global.run_gate(&provider, &subject("member"), b"input", 100, &id).await, Err(Error::Gates)));
+        store
+            .compare_exchange(
+                &read,
+                vec![storage::Change {
+                    key: key.clone(),
+                    record: Some(storage::Record {
+                        value: serde_json::to_vec(&value).unwrap(),
+                        deadline: 0,
+                    }),
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            global
+                .run_gate(&provider, &subject("member"), b"input", 100, &id)
+                .await,
+            Err(Error::Gates)
+        ));
     }
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 }
@@ -822,18 +909,58 @@ async fn cached_status_observes_revision_changes_and_refuses_same_version_equivo
     let first = global.public_status(100, 2 * DAY).await.unwrap();
     let key = storage::Key::new("meta", "state");
     let observed = store.read(std::slice::from_ref(&key)).await.unwrap();
-    let mut state: serde_json::Value = serde_json::from_slice(&observed.records[&key].value).unwrap();
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&observed.records[&key].value).unwrap();
     state["policy"]["revision"] = serde_json::json!(2);
-    store.compare_exchange(&observed, vec![storage::Change { key: key.clone(), record: Some(storage::Record { value: serde_json::to_vec(&state).unwrap(), deadline: 0 }) }]).await.unwrap();
+    store
+        .compare_exchange(
+            &observed,
+            vec![storage::Change {
+                key: key.clone(),
+                record: Some(storage::Record {
+                    value: serde_json::to_vec(&state).unwrap(),
+                    deadline: 0,
+                }),
+            }],
+        )
+        .await
+        .unwrap();
     let second = global.public_status(100, 2 * DAY).await.unwrap();
     assert_ne!(first, second);
     Status::verify(&second, global.key_ring().unwrap(), "global", 1, 2, 100).unwrap();
     let mut changed = state.clone();
     changed["policy"]["shared_expiry"] = serde_json::json!(COHORT + DAY);
     let observed = store.read(std::slice::from_ref(&key)).await.unwrap();
-    store.compare_exchange(&observed, vec![storage::Change { key: key.clone(), record: Some(storage::Record { value: serde_json::to_vec(&changed).unwrap(), deadline: 0 }) }]).await.unwrap();
-    assert!(matches!(global.public_status(100, 2 * DAY).await, Err(Error::Signature)));
+    store
+        .compare_exchange(
+            &observed,
+            vec![storage::Change {
+                key: key.clone(),
+                record: Some(storage::Record {
+                    value: serde_json::to_vec(&changed).unwrap(),
+                    deadline: 0,
+                }),
+            }],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        global.public_status(100, 2 * DAY).await,
+        Err(Error::Signature)
+    ));
     let observed = store.read(std::slice::from_ref(&key)).await.unwrap();
-    store.compare_exchange(&observed, vec![storage::Change { key, record: Some(storage::Record { value: serde_json::to_vec(&state).unwrap(), deadline: 0 }) }]).await.unwrap();
+    store
+        .compare_exchange(
+            &observed,
+            vec![storage::Change {
+                key,
+                record: Some(storage::Record {
+                    value: serde_json::to_vec(&state).unwrap(),
+                    deadline: 0,
+                }),
+            }],
+        )
+        .await
+        .unwrap();
     assert_eq!(global.public_status(100, 2 * DAY).await.unwrap(), second);
 }

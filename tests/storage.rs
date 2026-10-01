@@ -300,7 +300,10 @@ async fn imported_unindexed_expiry_schema_is_rejected_by_the_actual_planner() {
         .split("CREATE INDEX")
         .next()
         .unwrap()
-        .replace("PRIMARY KEY(community_id,bucket,entry_key)", "PRIMARY KEY(community_id,entry_key)")
+        .replace(
+            "PRIMARY KEY(community_id,bucket,entry_key)",
+            "PRIMARY KEY(community_id,entry_key)",
+        )
         .replace(" WITHOUT ROWID", "");
     db.migrate(&[Migration::new(1, "legacy rowid import", &schema)])
         .await
@@ -312,9 +315,17 @@ async fn imported_unindexed_expiry_schema_is_rejected_by_the_actual_planner() {
     }
     tx.commit().await.unwrap();
     let raw_db = libsql::Builder::new_local(&path).build().await.unwrap();
-    raw_db.connect().unwrap().execute_batch("ANALYZE").await.unwrap();
+    raw_db
+        .connect()
+        .unwrap()
+        .execute_batch("ANALYZE")
+        .await
+        .unwrap();
     let store = LibsqlStore::new(&db, "global").unwrap();
-    assert!(matches!(store.check_query_plans().await, Err(Error::Storage)));
+    assert!(matches!(
+        store.check_query_plans().await,
+        Err(Error::Storage)
+    ));
 }
 
 #[tokio::test]
