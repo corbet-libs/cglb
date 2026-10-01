@@ -299,11 +299,24 @@ async fn real_schema_loss_refuses_plans_reads_and_observed_updates() {
     db.migrate(&[
         Migration::new(1, "global", SCHEMA),
         Migration::new(2, "external-loss", "DROP TABLE cglb_record"),
-    ]).await.unwrap();
-    assert!(matches!(store.check_query_plans().await, Err(Error::Storage)));
+    ])
+    .await
+    .unwrap();
+    assert!(matches!(
+        store.check_query_plans().await,
+        Err(Error::Storage)
+    ));
     assert!(matches!(store.read(&[key("a")]).await, Err(Error::Storage)));
-    assert!(matches!(store.list("challenge", "", 1).await, Err(Error::Storage)));
-    assert!(matches!(store.compare_exchange(&observed, vec![change("a", 10)]).await, Err(Error::Storage)));
+    assert!(matches!(
+        store.list("challenge", "", 1).await,
+        Err(Error::Storage)
+    ));
+    assert!(matches!(
+        store
+            .compare_exchange(&observed, vec![change("a", 10)])
+            .await,
+        Err(Error::Storage)
+    ));
 }
 
 #[tokio::test]
@@ -311,18 +324,36 @@ async fn a_real_second_insert_refusal_rolls_back_the_first_row() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("refused-batch.db").display());
     let db = Db::open(Config::new(url, "")).await.unwrap();
-    let schema = SCHEMA.replace("entry_key TEXT NOT NULL", "entry_key TEXT NOT NULL CHECK(entry_key <> 'blocked')");
-    db.migrate(&[Migration::new(1, "import", &schema)]).await.unwrap();
+    let schema = SCHEMA.replace(
+        "entry_key TEXT NOT NULL",
+        "entry_key TEXT NOT NULL CHECK(entry_key <> 'blocked')",
+    );
+    db.migrate(&[Migration::new(1, "import", &schema)])
+        .await
+        .unwrap();
     let store = LibsqlStore::new(&db, "global").unwrap();
     let observed = store.read(&[key("first"), key("blocked")]).await.unwrap();
-    assert!(matches!(store.compare_exchange(&observed, vec![change("first", 10), change("blocked", 10)]).await, Err(Error::Storage)));
+    assert!(matches!(
+        store
+            .compare_exchange(&observed, vec![change("first", 10), change("blocked", 10)])
+            .await,
+        Err(Error::Storage)
+    ));
     let unchanged = store.read(&[key("first"), key("blocked")]).await.unwrap();
     assert!(unchanged.records.is_empty());
     assert_eq!(unchanged.revisions, observed.revisions);
-    store.compare_exchange(&observed, vec![change("first", 11)]).await.unwrap();
+    store
+        .compare_exchange(&observed, vec![change("first", 11)])
+        .await
+        .unwrap();
     let genuine = store.read(&[key("first")]).await.unwrap();
     db.community("global").unwrap().execute(
         "UPDATE cglb_record SET revision='corrupt' WHERE bucket='challenge' AND entry_key='first'", (),
     ).await.unwrap();
-    assert!(matches!(store.compare_exchange(&genuine, vec![change("first", 12)]).await, Err(Error::Storage)));
+    assert!(matches!(
+        store
+            .compare_exchange(&genuine, vec![change("first", 12)])
+            .await,
+        Err(Error::Storage)
+    ));
 }
