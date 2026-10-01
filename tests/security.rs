@@ -410,3 +410,145 @@ async fn beacon_refuses_signed_documents_with_invalid_owner_payloads() {
         assert!(matches!(cache.current(100), Err(cbcn::Error::Unavailable)));
     }
 }
+
+#[test]
+fn authenticated_identifiers_enforce_bounds_and_redact_debug_output() {
+    for invalid in [String::new(), "x".repeat(129), "contains space".into(), "é".into()] {
+        assert!(matches!(Subject::new(&invalid), Err(Error::InvalidIdentifier)));
+        assert!(serde_json::from_value::<Subject>(serde_json::json!(invalid)).is_err());
+    }
+    let who = subject(&"x".repeat(128));
+    assert_eq!(format!("{who:?}"), "Subject([redacted])");
+    assert!(matches!(Session::authenticated(who.clone(), [0; 32]), Err(Error::InvalidIdentifier)));
+    assert_eq!(Session::authenticated(who.clone(), [1; 32]).unwrap().subject(), &who);
+    assert_eq!(format!("{:?}", check()), "CheckId([redacted])");
+}
+
+#[tokio::test]
+async fn open_refuses_cross_scope_keys_unaligned_signers_and_invalid_limits() {
+    for case in ["scope", "activation", "issuer", "zero-ttl", "large-ttl", "capacity"] {
+        let signing_scope = if case == "issuer" { "cglb:other" } else { "cglb:global" };
+        let signer = csgn::PersistentSigner::create(
+            csgn::MemoryStore::default(), signing_scope,
+            csgn::SecretKey::from_seed(&mut [2; 32]),
+            u64::from(case == "activation"), 30 * DAY,
+        ).await.unwrap();
+        let scope = if case == "scope" { b"other".as_slice() } else { b"global".as_slice() };
+        let issuance = cpsd::MemoryStore::new(cpsd::CommunityId::new(scope).unwrap(), 2).unwrap();
+        let limits = Limits {
+            challenge_ttl: match case { "zero-ttl" => 0, "large-ttl" => cpsd::TIME_LIMIT, _ => 60 },
+            pending_capacity: u32::from(case != "capacity"),
+        };
+        let result = Global::open(MemoryStore::new("global").unwrap(), issuance, issuer(), signer,
+            fingerprints(), Mode::Production, limits).await;
+        match case {
+            "scope" | "issuer" => assert!(matches!(result, Err(Error::KeyMismatch)), "{case}"),
+            "activation" => assert!(matches!(result, Err(Error::InvalidTime))),
+            _ => assert!(matches!(result, Err(Error::Capacity)), "{case}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn policy_refusals_authenticate_each_invalid_field_before_state_changes() {
+    let store = MemoryStore::new("global").unwrap();
+    let global = open(store.clone(), csgn::MemoryStore::default(),
+        cpsd::MemoryStore::new(cpsd::CommunityId::new(b"global").unwrap(), 2).unwrap(), false).await;
+    let mut authority = csgn::PersistentSigner::create(csgn::MemoryStore::default(), "authority",
+        csgn::SecretKey::from_seed(&mut [3; 32]), 0, 30 * DAY).await.unwrap();
+    let original = Policy { version: 1, scope: "global".into(), revision: 1, epoch: 1,
+        shared_expiry: COHORT, gates: vec![GatePolicy { gate: "phone".into(), provider: "sms".into(), uniqueness: true }] };
+    for case in ["version", "revision", "epoch", "cohort", "expired", "empty", "many", "first-epoch", "provider"] {
+        let mut invalid = original.clone();
+        match case {
+            "version" => invalid.version = 2,
+            "revision" => invalid.revision = 0,
+            "epoch" => invalid.epoch = 0,
+            "cohort" => invalid.shared_expiry += 1,
+            "expired" => invalid.shared_expiry = 0,
+            "empty" => invalid.gates.clear(),
+            "many" => invalid.gates = vec![invalid.gates[0].clone(); cpsd::MAX_GATES + 1],
+            "first-epoch" => invalid.epoch = 2,
+            _ => invalid.gates[0].provider = "cglb.test".into(),
+        }
+        let bytes = authority.sign(csgn::Kind::SettingsSnapshot, &serde_json::to_vec(&invalid).unwrap(), 0, COHORT + DAY).await.unwrap();
+        let result = global.install_policy(&bytes, authority.key_ring().unwrap(), 100).await;
+        if case == "provider" { assert!(matches!(result, Err(Error::DevelopmentDisabled))); }
+        else { assert!(matches!(result, Err(Error::Policy)), "{case}"); }
+        assert!(store.read(&[storage::Key::new("meta", "state")]).await.unwrap().records.is_empty());
+    }
+    for now in [0, cpsd::TIME_LIMIT] {
+        assert!(matches!(global.prune_challenges(now, 1).await, Err(Error::InvalidTime)));
+    }
+}
+
+#[tokio::test]
+async fn operations_refuse_invalid_inputs_expired_policy_and_changed_storage_binding() {
+    let (global, store, _, _) = make().await;
+    let provider = Provider::default();
+    for value in ["short".into(), "g".repeat(64), "A".repeat(64)] {
+        let id: CheckId = serde_json::from_value(serde_json::json!(value)).unwrap();
+        assert!(matches!(global.run_gate(&provider, &subject("member"), b"input", 100, &id).await, Err(Error::InvalidIdentifier)));
+    }
+    for limit in [0, 1001] {
+        assert!(matches!(global.revocations("", limit).await, Err(Error::Capacity)));
+        assert!(matches!(global.prune_challenges(100, limit).await, Err(Error::Capacity)));
+    }
+    for until in [100, DAY + 1] {
+        assert!(matches!(global.suspend(&subject("member"), Suspension::Temporary { until }, 100).await, Err(Error::InvalidTime)));
+    }
+    let mut rng = StdRng::seed_from_u64(77);
+    assert!(matches!(global.challenge(&mut rng, &session("member"), 100, 100).await, Err(Error::InvalidTime)));
+    assert!(matches!(global.challenge(&mut rng, &session("member"), COHORT, COHORT + 1).await, Err(Error::InvalidTime)));
+    assert!(matches!(global.run_gate(&provider, &subject("member"), b"input", COHORT + 1, &check()).await, Err(Error::Policy)));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    let key = storage::Key::new("meta", "binding");
+    let read = store.read(std::slice::from_ref(&key)).await.unwrap();
+    store.compare_exchange(&read, vec![storage::Change { key, record: None }]).await.unwrap();
+    assert!(matches!(global.warn(&subject("member")).await, Err(Error::KeyMismatch)));
+}
+
+#[tokio::test]
+async fn imported_account_mismatches_cannot_authorize_issuance() {
+    let (global, store, _, _) = make().await;
+    let provider = Provider::default();
+    global.run_gate(&provider, &subject("member"), b"unique", 100, &check()).await.unwrap();
+    let key = storage::Key::new("account", "member");
+    let original = store.read(std::slice::from_ref(&key)).await.unwrap().records[&key].clone();
+    let mut rng = StdRng::seed_from_u64(12);
+    for field in ["subject", "provider", "expiry", "fingerprint"] {
+        let mut value: serde_json::Value = serde_json::from_slice(&original.value).unwrap();
+        match field {
+            "subject" => value["gates"]["phone"]["subject"] = serde_json::json!("other"),
+            "provider" => value["gates"]["phone"]["provider"] = serde_json::json!("other"),
+            "expiry" => value["gates"]["phone"]["valid_until"] = serde_json::json!(COHORT - DAY),
+            _ => value["fingerprints"] = serde_json::json!({}),
+        }
+        let read = store.read(std::slice::from_ref(&key)).await.unwrap();
+        store.compare_exchange(&read, vec![storage::Change { key: key.clone(), record: Some(storage::Record {
+            value: serde_json::to_vec(&value).unwrap(), deadline: 0,
+        }) }]).await.unwrap();
+        assert!(matches!(global.challenge(&mut rng, &session("member"), 100, 150).await, Err(Error::Gates)), "{field}");
+        assert!(store.list("challenge", "", 10).await.unwrap().records.is_empty());
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removing_a_provider_during_verification_refuses_its_late_receipt() {
+    let (global, store, _, _) = make().await;
+    let global = Arc::new(global);
+    let provider = Arc::new(Provider::default());
+    provider.delay.store(true, Ordering::SeqCst);
+    let task = {
+        let global = global.clone();
+        let provider = provider.clone();
+        tokio::spawn(async move { global.run_gate(&*provider, &subject("alice"), b"unique", 100, &check()).await })
+    };
+    provider.started.notified().await;
+    install(&global, 2, 2, COHORT, 100, "replacement").await.unwrap();
+    provider.release.notify_one();
+    assert!(matches!(task.await.unwrap(), Err(Error::GateDisabled)));
+    assert!(store.list("account", "", 10).await.unwrap().records.is_empty());
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
