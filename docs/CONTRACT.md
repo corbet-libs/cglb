@@ -115,5 +115,18 @@ contains no development gate implementation.
 
 GitHub Actions runs format, Clippy, real memory/libSQL/crypto tests, release tests,
 a hardened-release negative compilation probe, dependency-license review and the
-shared duplicate/floating-revision check. Every Corbet dependency must resolve
-once at an explicit full revision. Builds never run on the workstation.
+shared duplicate/floating-revision check. Every first-party dependency follows main and must resolve
+once at a full revision in the shared lock snapshot. Builds never run on the workstation.
+
+## Shared Beacon cache
+
+After the existing post-signing state recheck, `signed_status` installs original
+COSE bytes in `cbcn::document::Cache<Status>`. Existing Status payload validation
+is shared by the consumer verifier and the typed Beacon port. No community feed
+shape or private suspension list is published. The cache is volatile: durable
+policy floors and suspension epochs remain in the global store.
+
+The cached path rechecks the durable state fence and requires the exact current
+policy revision, epoch, cohort and issuer key. It never accepts a deadline that
+is already expired after day rounding. Beacon supplies no durable storage or
+member authority. A backward observed clock fails closed.

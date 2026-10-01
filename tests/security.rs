@@ -322,3 +322,83 @@ async fn authority_policy_epoch_is_independent_of_suspensions_and_status_is_coar
     assert_eq!(value["gates"]["phone"]["valid_until"], COHORT);
     assert!(value.get("tag").is_none());
 }
+
+#[tokio::test]
+async fn beacon_reuses_exact_bytes_and_refreshes_owner_version_and_lifetime() {
+    let (mut global, _, _, _) = make().await;
+    let first = global.public_status(100, 2 * DAY + 123).await.unwrap();
+    assert_eq!(global.public_status(101, 2 * DAY).await.unwrap(), first);
+    assert!(matches!(
+        global.public_status(102, 102).await,
+        Err(Error::InvalidTime)
+    ));
+    let longer = global.public_status(103, 3 * DAY).await.unwrap();
+    assert_ne!(longer, first);
+    assert_eq!(
+        global
+            .key_ring()
+            .unwrap()
+            .verify(&longer, csgn::Kind::SettingsSnapshot, 103)
+            .unwrap()
+            .valid_until(),
+        3 * DAY
+    );
+    install(&global, 2, 2, COHORT, 104, "sms").await.unwrap();
+    let current = global.public_status(105, 3 * DAY).await.unwrap();
+    let status = Status::verify(&current, global.key_ring().unwrap(), "global", 2, 2, 105)
+        .unwrap();
+    assert_eq!((status.epoch, status.policy_revision), (2, 2));
+    assert_ne!(current, longer);
+    assert!(matches!(
+        global.public_status(104, 3 * DAY).await,
+        Err(Error::Signature)
+    ));
+    assert_eq!(global.public_status(106, 3 * DAY).await.unwrap(), current);
+    let renewed = global.public_status(3 * DAY, 4 * DAY).await.unwrap();
+    assert_ne!(renewed, current);
+    assert!(Status::verify(
+        &renewed,
+        global.key_ring().unwrap(),
+        "global",
+        2,
+        2,
+        3 * DAY,
+    )
+    .is_ok());
+}
+
+#[tokio::test]
+async fn beacon_refuses_signed_documents_with_invalid_owner_payloads() {
+    let (mut global, _, _, _) = make().await;
+    let bytes = global.public_status(100, 2 * DAY).await.unwrap();
+    let original = Status::verify(&bytes, global.key_ring().unwrap(), "global", 1, 1, 100)
+        .unwrap();
+    let mut signer = csgn::Signer::new(
+        "cglb:global",
+        csgn::SecretKey::from_seed(&mut [44; 32]),
+        0,
+        30 * DAY,
+    )
+    .unwrap();
+    for field in ["version", "purpose", "scope", "cohort", "issuer-key"] {
+        let mut invalid = original.clone();
+        match field {
+            "version" => invalid.version = 1,
+            "purpose" => invalid.purpose = "other".into(),
+            "scope" => invalid.scope = "other".into(),
+            "cohort" => invalid.shared_expiry += 1,
+            _ => invalid.issuer_public_key.clear(),
+        }
+        let bytes = signer
+            .sign(
+                csgn::Kind::SettingsSnapshot,
+                &serde_json::to_vec(&invalid).unwrap(),
+                0,
+                2 * DAY,
+            )
+            .unwrap();
+        let mut cache = cbcn::document::Cache::<Status>::default();
+        assert!(cache.install(signer.key_ring(), bytes, 100).is_err(), "{field}");
+        assert!(matches!(cache.current(100), Err(cbcn::Error::Unavailable)));
+    }
+}

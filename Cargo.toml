@@ -15,6 +15,7 @@ default = []
 development-gate = []
 
 [dependencies]
+cbcn = { git = "https://github.com/corbet-foss/cbcn", branch = "main" }
 cpsd = { git = "https://github.com/corbet-foss/cpsd", branch = "main", default-features = false, features = ["storage"] }
 crlt = { git = "https://github.com/corbet-foss/crlt", branch = "main" }
 csgn = { git = "https://github.com/corbet-foss/csgn", branch = "main", features = ["libsql"] }

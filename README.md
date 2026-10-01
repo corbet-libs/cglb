@@ -119,3 +119,9 @@ See [the current contract](docs/CONTRACT.md) for migration and provider obligati
 Dependency updates follow main and are tested against one CI-resolved lockfile.
 Line and branch coverage target 100%; failures remain blocking. See
 [the coverage contract](docs/COVERAGE.md) for measurement and exclusions.
+
+Public status publication reuses `cbcn::document::Cache<Status>` and the existing
+`csgn` COSE implementation. This shared typed cache was chosen over a second local
+cache or generic HTTP cache because it preserves the original signed bytes and
+checks issuer, kind, lifetime and policy floors. `Global::public_status` also
+fences against the durable current version; private revocations are never cached.

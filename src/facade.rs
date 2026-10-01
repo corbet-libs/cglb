@@ -56,6 +56,7 @@ pub struct Global<S, K, I> {
     signer: csgn::PersistentSigner<K>,
     fingerprints: FingerprintKey,
     binding: Binding,
+    beacon: cbcn::document::Cache<Status>,
     mode: Mode,
     limits: Limits,
 }
@@ -132,6 +133,7 @@ impl<S: Store, K: csgn::Store, I: cpsd::IssuanceStore> Global<S, K, I> {
             signer,
             fingerprints,
             binding,
+            beacon: cbcn::document::Cache::default(),
             mode,
             limits,
         })
@@ -644,6 +646,53 @@ impl<S: Store, K: csgn::Store, I: cpsd::IssuanceStore> Global<S, K, I> {
         self.store.compare_exchange(&read, changes).await?;
         Ok(size)
     }
+    /// Reuse original signed public bytes while their owner version is current.
+    /// Private suspension lists remain in storage. The requested deadline must
+    /// remain future after the existing UTC-day rounding.
+    pub async fn public_status(&mut self, now: u64, valid_until: u64) -> Result<Vec<u8>> {
+        time(now)?;
+        time(valid_until)?;
+        let deadline = valid_until / 86_400 * 86_400;
+        if deadline <= now {
+            return Err(Error::InvalidTime);
+        }
+        let read = self.read(vec![]).await?;
+        let state: State = get(&read, &meta("state"))?.ok_or(Error::NoPolicy)?;
+        match self.beacon.current(now) {
+            Ok(bytes) => {
+                let ring = self.key_ring()?;
+                let current = Status::verify(
+                    &bytes,
+                    ring,
+                    self.store.scope(),
+                    state.epoch()?,
+                    state.policy.revision,
+                    now,
+                );
+                let lifetime = ring
+                    .verify(&bytes, csgn::Kind::SettingsSnapshot, now)
+                    .map(|value| value.valid_until() >= deadline)
+                    .unwrap_or(false);
+                if let Ok(current) = current
+                    && current.epoch == state.epoch()?
+                    && current.policy_revision == state.policy.revision
+                    && current.shared_expiry == state.policy.shared_expiry
+                    && current.issuer_public_key == self.binding.issuer
+                    && lifetime
+                {
+                    let latest = self.read(vec![]).await?;
+                    if latest.revisions != read.revisions {
+                        return Err(Error::Conflict);
+                    }
+                    return Ok(bytes.as_ref().to_vec());
+                }
+            }
+            Err(cbcn::Error::ClockRegression) => return Err(Error::Signature),
+            Err(_) => (),
+        }
+        self.signed_status(now, valid_until).await
+    }
+
     /// Sign public epoch/status without exposing the private revocation list.
     pub async fn signed_status(&mut self, now: u64, valid_until: u64) -> Result<Vec<u8>> {
         time(now)?;
@@ -674,7 +723,12 @@ impl<S: Store, K: csgn::Store, I: cpsd::IssuanceStore> Global<S, K, I> {
         if current.revisions != read.revisions {
             return Err(Error::Conflict);
         }
-        Ok(signed)
+        let ring = self.signer.key_ring().map_err(|_| Error::Signature)?;
+        let published = self
+            .beacon
+            .install(ring, signed, now)
+            .map_err(|_| Error::Signature)?;
+        Ok(published.as_ref().to_vec())
     }
     /// Public COSE key ring. Its transport and freshness must be authenticated.
     pub fn key_ring(&self) -> Result<&csgn::KeyRing> {
@@ -712,18 +766,39 @@ impl Status {
             .map_err(|_| Error::Signature)?;
         let value: Self =
             serde_json::from_slice(verified.payload()).map_err(|_| Error::Encoding)?;
-        if value.version != 2
-            || value.purpose != "global-passport-status"
-            || !value.shared_expiry.is_multiple_of(86_400)
-            || value.scope != scope
+        value.validate_publication(ring.issuer())?;
+        if value.scope != scope
             || value.epoch < minimum_epoch
             || value.policy_revision < minimum_revision
         {
             return Err(Error::Policy);
         }
-        time(value.shared_expiry)?;
-        cpsd::IssuerPublicKey::from_bytes(&value.issuer_public_key).map_err(|_| Error::Encoding)?;
         Ok(value)
+    }
+    fn validate_publication(&self, issuer: &str) -> Result<()> {
+        if issuer != format!("cglb:{}", self.scope)
+            || self.version != 2
+            || self.purpose != "global-passport-status"
+            || !self.shared_expiry.is_multiple_of(86_400)
+        {
+            return Err(Error::Policy);
+        }
+        time(self.shared_expiry)?;
+        cpsd::IssuerPublicKey::from_bytes(&self.issuer_public_key)
+            .map_err(|_| Error::Encoding)?;
+        Ok(())
+    }
+}
+impl cbcn::document::Document for Status {
+    const KIND: csgn::Kind = csgn::Kind::SettingsSnapshot;
+
+    fn version(&self, issuer: &str) -> cbcn::Result<cbcn::document::Version> {
+        self.validate_publication(issuer)
+            .map_err(|_| cbcn::Error::Incoherent)?;
+        Ok(cbcn::document::Version {
+            revision: self.policy_revision,
+            epoch: self.epoch,
+        })
     }
 }
 
