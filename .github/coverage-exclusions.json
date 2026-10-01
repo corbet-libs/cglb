@@ -1,0 +1,69 @@
+[
+  {
+    "file": "src/facade.rs",
+    "line": 193,
+    "source": "&& (gate.gate == \"development\" || gate.provider == \"cglb.test\")",
+    "target": "native",
+    "branch": {
+      "block": 0,
+      "id": 0
+    },
+    "reason": "A production constructor rejects an issuer containing development; policy validation already requires every gate to be in that immutable issuer catalogue.",
+    "evidence": "docs/COVERAGE.md#proposed-invariant-exceptions",
+    "evidence_sources": {
+      "src/facade.rs": "dd46258da2323a587bd3475150c4e725dafd5395b3b959835946ebfb9aed44e7"
+    },
+    "evidence_packages": {
+      "cpsd": {
+        "version": "0.0.0",
+        "source": "git+https://github.com/corbet-foss/cpsd?branch=main#a23616e906ffa924aa5bda667e7ea1edf3a692d4"
+      }
+    }
+  },
+  {
+    "file": "src/facade.rs",
+    "line": 680,
+    "source": "&& current.issuer_public_key == self.binding.issuer",
+    "target": "native",
+    "branch": {
+      "block": 0,
+      "id": 1
+    },
+    "reason": "The private cache is populated only by signed_status, which copies the immutable issuer binding into every signed payload; there is no caller cache import.",
+    "evidence": "docs/COVERAGE.md#proposed-invariant-exceptions",
+    "evidence_sources": {
+      "src/facade.rs": "dd46258da2323a587bd3475150c4e725dafd5395b3b959835946ebfb9aed44e7"
+    },
+    "evidence_packages": {
+      "cbcn": {
+        "version": "0.1.0",
+        "source": "git+https://github.com/corbet-foss/cbcn?branch=main#53ed942cdc1439fcedbc9914cf6cc44f83020d29"
+      },
+      "csgn": {
+        "version": "0.0.0",
+        "source": "git+https://github.com/corbet-foss/csgn?branch=main#fac7f49eeb4e4bb9b72de640b46e55d8fe99119c"
+      }
+    }
+  },
+  {
+    "file": "src/facade.rs",
+    "line": 770,
+    "source": "if value.scope != scope",
+    "target": "native",
+    "branch": {
+      "block": 0,
+      "id": 0
+    },
+    "reason": "The prior issuer check and validate_publication both bind the same immutable ring issuer to the same literal prefix plus scope.",
+    "evidence": "docs/COVERAGE.md#proposed-invariant-exceptions",
+    "evidence_sources": {
+      "src/facade.rs": "dd46258da2323a587bd3475150c4e725dafd5395b3b959835946ebfb9aed44e7"
+    },
+    "evidence_packages": {
+      "csgn": {
+        "version": "0.0.0",
+        "source": "git+https://github.com/corbet-foss/csgn?branch=main#fac7f49eeb4e4bb9b72de640b46e55d8fe99119c"
+      }
+    }
+  }
+]
