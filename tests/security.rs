@@ -743,3 +743,16 @@ async fn removing_a_provider_during_verification_refuses_its_late_receipt() {
     );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn status_refuses_tampering_future_minima_and_regressing_publication_time() {
+    let (mut global, _, _, _) = make().await;
+    assert!(matches!(global.signed_status(100, 100).await, Err(Error::Signature)));
+    let original = global.signed_status(100, 2 * DAY).await.unwrap();
+    let mut tampered = original.clone();
+    *tampered.last_mut().unwrap() ^= 1;
+    assert!(matches!(Status::verify(&tampered, global.key_ring().unwrap(), "global", 1, 1, 100), Err(Error::Signature)));
+    assert!(matches!(Status::verify(&original, global.key_ring().unwrap(), "global", 1, 2, 100), Err(Error::Policy)));
+    assert!(matches!(global.signed_status(90, 2 * DAY).await, Err(Error::Signature)));
+    assert_eq!(global.public_status(100, 2 * DAY).await.unwrap(), original);
+}

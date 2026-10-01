@@ -756,6 +756,31 @@ async fn production_rejects_development_and_stored_key_changes() {
 }
 
 #[tokio::test]
+async fn optional_unique_input_and_rounded_provider_expiry_follow_the_signed_policy() {
+    let store = MemoryStore::new("test").unwrap();
+    let global = Global::open(
+        store.clone(), challenges("test", 20), issuer(1, &["development", "unique"]),
+        signer(csgn::MemoryStore::default(), "test").await, fingerprint_key(9),
+        Mode::Development, Limits { challenge_ttl: 60, pending_capacity: 10 },
+    ).await.unwrap();
+    let mut authority = authority().await;
+    let mut rules = policy("test", 1, 1, COHORT);
+    rules.gates[0].uniqueness = false;
+    rules.gates.push(GatePolicy { gate: "unique".into(), provider: "external".into(), uniqueness: true });
+    install(&global, &mut authority, &rules, 100).await.unwrap();
+    assert!(matches!(global.run_gate(&DevelopmentGate::new(101), &subject("expired"), b"input", 100, &check()).await, Err(Error::Gates)));
+    let result = global.run_gate(&DevelopmentGate::new(COHORT), &subject("member"), b"input", 100, &check()).await.unwrap();
+    assert_eq!(result.valid_until, COHORT);
+    assert!(store.list("fingerprint", "", 10).await.unwrap().records.is_empty());
+    let key = storage::Key::new("account", "member");
+    let saved = store.read(std::slice::from_ref(&key)).await.unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&saved.records[&key].value).unwrap();
+    assert_eq!(saved["fingerprints"], serde_json::json!({}));
+    let mut rng = StdRng::seed_from_u64(77);
+    assert!(matches!(global.challenge(&mut rng, &session(&subject("member")), 100, 150).await, Err(Error::Gates)));
+}
+
+#[tokio::test]
 async fn durable_renewal_after_reopen_keeps_identity_and_rejects_new_secret() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("restart.db").display());
