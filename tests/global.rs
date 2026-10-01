@@ -781,6 +781,95 @@ async fn optional_unique_input_and_rounded_provider_expiry_follow_the_signed_pol
 }
 
 #[tokio::test]
+async fn leaf_capacity_and_missing_nonce_refuse_without_releasing_the_person_binding() {
+    use cpsd::ChallengeStore;
+    let store = MemoryStore::new("test").unwrap();
+    let leaf = challenges("test", 1);
+    let global = make(store.clone(), csgn::MemoryStore::default(), leaf.clone(), 10).await;
+    let mut authority = authority().await;
+    install(&global, &mut authority, &policy("test", 1, 1, COHORT), 100).await.unwrap();
+    for id in ["first", "second"] {
+        global.run_gate(&DevelopmentGate::new(COHORT), &subject(id), id.as_bytes(), 100, &check()).await.unwrap();
+    }
+    let mut rng = StdRng::seed_from_u64(19);
+    global.challenge(&mut rng, &session(&subject("first")), 100, 110).await.unwrap();
+    assert!(matches!(global.challenge(&mut rng, &session(&subject("second")), 100, 110).await, Err(Error::Capacity)));
+    assert_eq!(global.prune_challenges(111, 10).await.unwrap(), 2);
+    let auth = session(&subject("first"));
+    let challenge = global.challenge(&mut rng, &auth, 112, 120).await.unwrap();
+    let secret = HolderSecret::generate(&mut rng);
+    let (request, _) = cpsd::request_issue(&mut rng, &secret, global.issuer_public_key(), &challenge).unwrap();
+    assert_eq!(leaf.prune(121).await.unwrap(), 1);
+    assert!(matches!(global.issue(&mut rng, &auth, &challenge, &request, 113).await, Err(Error::Challenge)));
+    let replacement = global.challenge(&mut rng, &auth, 122, 130).await.unwrap();
+    assert_ne!(replacement.to_bytes(), challenge.to_bytes());
+    assert_eq!(store.list("challenge", "", 10).await.unwrap().records.len(), 1);
+}
+
+#[tokio::test]
+async fn actual_sqlite_write_refusals_bound_retries_and_preserve_atomic_batches() {
+    // The separate driver installs hostile on-disk fixtures after crlt opens.
+    // Every facade operation still runs through the actual crlt/libSQL stores.
+    for action in ["IGNORE", "ABORT, 'write refused'"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("write-refusal.db");
+        let db = crlt::Db::open(crlt::Config::new(format!("file://{}", path.display()), "")).await.unwrap();
+        db.migrate(&migrations()).await.unwrap();
+        let store = LibsqlStore::new(&db, "test").unwrap();
+        let global = make(store.clone(), csgn::MemoryStore::default(), leaf(&db, "test"), 10).await;
+        let mut authority = authority().await;
+        install(&global, &mut authority, &policy("test", 1, 1, COHORT), 100).await.unwrap();
+        let raw_db = libsql::Builder::new_local(&path).build().await.unwrap();
+        let raw = raw_db.connect().unwrap();
+        raw.execute_batch(&format!("CREATE TRIGGER refuse_write BEFORE INSERT ON cglb_record WHEN NEW.bucket = 'account' BEGIN SELECT RAISE({action}); END;")).await.unwrap();
+        let error = global.run_gate(&DevelopmentGate::new(COHORT), &subject("member"), b"unique", 100, &check()).await.unwrap_err();
+        assert!(matches!((&error, action), (Error::Conflict, "IGNORE") | (Error::Storage, "ABORT, 'write refused'")));
+        assert!(store.list("account", "", 10).await.unwrap().records.is_empty());
+        assert!(store.list("fingerprint", "", 10).await.unwrap().records.is_empty());
+        raw.execute_batch("DROP TRIGGER refuse_write").await.unwrap();
+        global.run_gate(&DevelopmentGate::new(COHORT), &subject("member"), b"unique", 100, &check()).await.unwrap();
+        raw.execute_batch(&format!("CREATE TRIGGER refuse_write BEFORE INSERT ON cglb_record WHEN NEW.bucket = 'challenge' BEGIN SELECT RAISE({action}); END;")).await.unwrap();
+        let mut rng = StdRng::seed_from_u64(71);
+        let error = global.challenge(&mut rng, &session(&subject("member")), 100, 150).await.unwrap_err();
+        assert!(matches!((&error, action), (Error::Conflict, "IGNORE") | (Error::Storage, "ABORT, 'write refused'")));
+        assert!(store.list("challenge", "", 10).await.unwrap().records.is_empty());
+        raw.execute_batch("DROP TRIGGER refuse_write").await.unwrap();
+        global.challenge(&mut rng, &session(&subject("member")), 100, 150).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn real_nonce_storage_side_effects_cannot_change_a_reserved_issuance() {
+    let zeros = serde_json::to_string(&[0u8; 32]).unwrap();
+    let nonce = serde_json::to_string(&[8u8; 32]).unwrap();
+    for (bucket, entry, field, value) in [
+        ("challenge", "member", "epoch", "99".to_owned()),
+        ("meta", "state", "local_epoch", "1".to_owned()),
+        ("challenge", "member", "session", format!("json('{zeros}')")),
+        ("challenge", "member", "deadline", "149".to_owned()),
+        ("challenge", "member", "nonce", format!("json('{nonce}')")),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonce-change.db");
+        let db = crlt::Db::open(crlt::Config::new(format!("file://{}", path.display()), "")).await.unwrap();
+        db.migrate(&migrations()).await.unwrap();
+        let store = LibsqlStore::new(&db, "test").unwrap();
+        let global = make(store, csgn::MemoryStore::default(), leaf(&db, "test"), 10).await;
+        let mut authority = authority().await;
+        install(&global, &mut authority, &policy("test", 1, 1, COHORT), 100).await.unwrap();
+        global.run_gate(&DevelopmentGate::new(COHORT), &subject("member"), b"unique", 100, &check()).await.unwrap();
+        let raw_db = libsql::Builder::new_local(&path).build().await.unwrap();
+        let raw = raw_db.connect().unwrap();
+        raw.execute_batch(&format!("CREATE TRIGGER change_reservation AFTER INSERT ON cpsd_challenges BEGIN UPDATE cglb_record SET value = CAST(json_set(CAST(value AS TEXT), '$.{field}', {value}) AS BLOB), revision = revision + 1 WHERE community_id = 'test' AND bucket = '{bucket}' AND entry_key = '{entry}'; END;")).await.unwrap();
+        let mut rng = StdRng::seed_from_u64(72);
+        assert!(matches!(global.challenge(&mut rng, &session(&subject("member")), 100, 150).await, Err(Error::Challenge)), "{field}");
+        raw.execute_batch("DROP TRIGGER change_reservation").await.unwrap();
+        assert_eq!(global.prune_challenges(151, 10).await.unwrap(), 1);
+        global.challenge(&mut rng, &session(&subject("member")), 152, 160).await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn durable_renewal_after_reopen_keeps_identity_and_rejects_new_secret() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("restart.db").display());
