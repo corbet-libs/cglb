@@ -159,6 +159,8 @@ jobs:
 
           resolver.txt'
         retention-days: 7
+    env:
+      CARGO_PROFILE_TEST_OPT_LEVEL: '0'
 'on':
   push:
     branches:

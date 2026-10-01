@@ -35,3 +35,12 @@ The source gate requires a nonempty report, an exact file inventory matching the
 companion JSON, matching raw summary metadata, complete emitted branch counts
 and no duplicate, unknown or zero counters. It has no production exclusions.
 Actual browser/device execution remains separate from native coverage.
+
+The coverage job sets `CARGO_PROFILE_TEST_OPT_LEVEL=0` for this workspace. The
+ordinary native/performance and release/browser profiles are unchanged; the
+existing upstream pairing dependency optimization override remains. An earlier
+optimized profile reported zero for an accessor exercised by real assertions.
+The [rustc coverage guide](https://doc.rust-lang.org/rustc/instrument-coverage.html)
+explains that optimizing functions away can invalidate coverage mapping. This
+measurement configuration retains owned bodies instead of excluding them. It
+is a diagnostic correction, not evidence that the remaining gaps are covered.
