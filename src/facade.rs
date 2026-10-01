@@ -784,8 +784,7 @@ impl Status {
             return Err(Error::Policy);
         }
         time(self.shared_expiry)?;
-        cpsd::IssuerPublicKey::from_bytes(&self.issuer_public_key)
-            .map_err(|_| Error::Encoding)?;
+        cpsd::IssuerPublicKey::from_bytes(&self.issuer_public_key).map_err(|_| Error::Encoding)?;
         Ok(())
     }
 }

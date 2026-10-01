@@ -345,8 +345,7 @@ async fn beacon_reuses_exact_bytes_and_refreshes_owner_version_and_lifetime() {
     );
     install(&global, 2, 2, COHORT, 104, "sms").await.unwrap();
     let current = global.public_status(105, 3 * DAY).await.unwrap();
-    let status = Status::verify(&current, global.key_ring().unwrap(), "global", 2, 2, 105)
-        .unwrap();
+    let status = Status::verify(&current, global.key_ring().unwrap(), "global", 2, 2, 105).unwrap();
     assert_eq!((status.epoch, status.policy_revision), (2, 2));
     assert_ne!(current, longer);
     assert!(matches!(
@@ -356,23 +355,24 @@ async fn beacon_reuses_exact_bytes_and_refreshes_owner_version_and_lifetime() {
     assert_eq!(global.public_status(106, 3 * DAY).await.unwrap(), current);
     let renewed = global.public_status(3 * DAY, 4 * DAY).await.unwrap();
     assert_ne!(renewed, current);
-    assert!(Status::verify(
-        &renewed,
-        global.key_ring().unwrap(),
-        "global",
-        2,
-        2,
-        3 * DAY,
-    )
-    .is_ok());
+    assert!(
+        Status::verify(
+            &renewed,
+            global.key_ring().unwrap(),
+            "global",
+            2,
+            2,
+            3 * DAY,
+        )
+        .is_ok()
+    );
 }
 
 #[tokio::test]
 async fn beacon_refuses_signed_documents_with_invalid_owner_payloads() {
     let (mut global, _, _, _) = make().await;
     let bytes = global.public_status(100, 2 * DAY).await.unwrap();
-    let original = Status::verify(&bytes, global.key_ring().unwrap(), "global", 1, 1, 100)
-        .unwrap();
+    let original = Status::verify(&bytes, global.key_ring().unwrap(), "global", 1, 1, 100).unwrap();
     let mut signer = csgn::Signer::new(
         "cglb:global",
         csgn::SecretKey::from_seed(&mut [44; 32]),
@@ -398,7 +398,10 @@ async fn beacon_refuses_signed_documents_with_invalid_owner_payloads() {
             )
             .unwrap();
         let mut cache = cbcn::document::Cache::<Status>::default();
-        assert!(cache.install(signer.key_ring(), bytes, 100).is_err(), "{field}");
+        assert!(
+            cache.install(signer.key_ring(), bytes, 100).is_err(),
+            "{field}"
+        );
         assert!(matches!(cache.current(100), Err(cbcn::Error::Unavailable)));
     }
 }
