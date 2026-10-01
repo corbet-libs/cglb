@@ -870,6 +870,43 @@ async fn real_nonce_storage_side_effects_cannot_change_a_reserved_issuance() {
 }
 
 #[tokio::test]
+async fn post_crypto_storage_failure_never_releases_an_uncommitted_passport() {
+    for action in ["IGNORE", "ABORT, 'commit refused'", "owner-revision"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("issuance-commit.db");
+        let db = crlt::Db::open(crlt::Config::new(format!("file://{}", path.display()), "")).await.unwrap();
+        db.migrate(&migrations()).await.unwrap();
+        let store = LibsqlStore::new(&db, "test").unwrap();
+        let global = make(store.clone(), csgn::MemoryStore::default(), leaf(&db, "test"), 10).await;
+        let mut authority = authority().await;
+        install(&global, &mut authority, &policy("test", 1, 1, COHORT), 100).await.unwrap();
+        let who = subject("member");
+        global.run_gate(&DevelopmentGate::new(COHORT), &who, b"unique", 100, &check()).await.unwrap();
+        let mut rng = StdRng::seed_from_u64(73);
+        let auth = session(&who);
+        let challenge = global.challenge(&mut rng, &auth, 100, 150).await.unwrap();
+        let secret = HolderSecret::generate(&mut rng);
+        let (request, _) = cpsd::request_issue(&mut rng, &secret, global.issuer_public_key(), &challenge).unwrap();
+        let raw_db = libsql::Builder::new_local(&path).build().await.unwrap();
+        let raw = raw_db.connect().unwrap();
+        let trigger = if action == "owner-revision" {
+            "CREATE TRIGGER refuse_commit AFTER INSERT ON cpsd_issuer_tags BEGIN UPDATE cglb_record SET revision = revision + 1 WHERE community_id = 'test' AND bucket = 'account' AND entry_key = 'member'; END;".to_owned()
+        } else {
+            format!("CREATE TRIGGER refuse_commit BEFORE UPDATE ON cglb_record WHEN NEW.bucket = 'challenge' AND NEW.value IS NULL BEGIN SELECT RAISE({action}); END;")
+        };
+        raw.execute_batch(&trigger).await.unwrap();
+        let result = global.issue(&mut rng, &auth, &challenge, &request, 101).await;
+        if action == "ABORT, 'commit refused'" { assert!(matches!(result, Err(Error::Storage))); }
+        else { assert!(matches!(result, Err(Error::Conflict))); }
+        raw.execute_batch("DROP TRIGGER refuse_commit").await.unwrap();
+        assert!(matches!(global.issue(&mut rng, &auth, &challenge, &request, 102).await, Err(Error::Challenge)));
+        assert_eq!(store.list("challenge", "", 10).await.unwrap().records.len(), 1);
+        assert_eq!(global.prune_challenges(151, 10).await.unwrap(), 1);
+        issue(&global, &mut rng, &who, &secret, 152).await;
+    }
+}
+
+#[tokio::test]
 async fn durable_renewal_after_reopen_keeps_identity_and_rejects_new_secret() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("restart.db").display());
