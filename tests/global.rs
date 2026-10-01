@@ -1097,6 +1097,28 @@ async fn post_crypto_storage_failure_never_releases_an_uncommitted_passport() {
 }
 
 #[tokio::test]
+async fn status_publication_is_fenced_against_a_real_signing_transaction_side_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("status-commit.db");
+    let db = crlt::Db::open(crlt::Config::new(format!("file://{}", path.display()), "")).await.unwrap();
+    db.migrate(&migrations()).await.unwrap();
+    let store = LibsqlStore::new(&db, "test").unwrap();
+    let keys = csgn::LibsqlStore::new(db.community("test").unwrap());
+    let mut global = make(store, keys, leaf(&db, "test"), 10).await;
+    let mut authority = authority().await;
+    install(&global, &mut authority, &policy("test", 1, 1, COHORT), 100).await.unwrap();
+    let raw_db = libsql::Builder::new_local(&path).build().await.unwrap();
+    let raw = raw_db.connect().unwrap();
+    raw.execute_batch("CREATE TRIGGER change_status AFTER UPDATE ON csgn_state BEGIN UPDATE cglb_record SET revision = revision + 1 WHERE community_id = 'test' AND bucket = 'meta' AND entry_key = 'state'; END;").await.unwrap();
+    assert!(matches!(global.signed_status(100, 2 * DAY).await, Err(Error::Conflict)));
+    raw.execute_batch("DROP TRIGGER change_status").await.unwrap();
+    let signed = global.public_status(100, 2 * DAY).await.unwrap();
+    Status::verify(&signed, global.key_ring().unwrap(), "test", 1, 1, 100).unwrap();
+    raw.execute_batch("DROP TABLE cpsd_challenges").await.unwrap();
+    assert!(matches!(global.prune_challenges(101, 10).await, Err(Error::Storage)));
+}
+
+#[tokio::test]
 async fn durable_renewal_after_reopen_keeps_identity_and_rejects_new_secret() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("restart.db").display());

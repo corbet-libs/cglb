@@ -290,6 +290,34 @@ async fn actual_imported_row_types_and_revision_limits_fail_closed() {
 }
 
 #[tokio::test]
+async fn imported_unindexed_expiry_schema_is_rejected_by_the_actual_planner() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unindexed.db");
+    let db = Db::open(Config::new(format!("file://{}", path.display()), ""))
+        .await
+        .unwrap();
+    let schema = SCHEMA
+        .split("CREATE INDEX")
+        .next()
+        .unwrap()
+        .replace("PRIMARY KEY(community_id,bucket,entry_key)", "PRIMARY KEY(community_id,entry_key)")
+        .replace(" WITHOUT ROWID", "");
+    db.migrate(&[Migration::new(1, "legacy rowid import", &schema)])
+        .await
+        .unwrap();
+    let scope = db.community("global").unwrap();
+    let mut tx = scope.tx().await.unwrap();
+    for index in 0..100 {
+        tx.execute("INSERT INTO cglb_record (bucket, entry_key, revision, value, deadline) VALUES ('challenge', ?1, 1, ?2, 10)", crlt::params![index.to_string(), vec![1u8]]).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let raw_db = libsql::Builder::new_local(&path).build().await.unwrap();
+    raw_db.connect().unwrap().execute_batch("ANALYZE").await.unwrap();
+    let store = LibsqlStore::new(&db, "global").unwrap();
+    assert!(matches!(store.check_query_plans().await, Err(Error::Storage)));
+}
+
+#[tokio::test]
 async fn real_schema_loss_refuses_plans_reads_and_observed_updates() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("file://{}", dir.path().join("missing-table.db").display());
