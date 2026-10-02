@@ -5,6 +5,53 @@
 Part of `cvld`, the permanent door of the cmtymeet trust stack. Status: in
 development; interfaces may change.
 
+## Scope
+
+### Purpose
+
+`cglb` checks a real, unique person once and issues the blind passport from which every community derives an unlinkable pseudonym.
+
+### Owns
+
+- The global gates: phone, government document, human, Privacy Pass, mailbox, third-party provider, and platform fee. A proof about the person is global; a proof about the relationship to one community belongs to the community side.
+- Uniqueness as a module: one keyed fingerprint per uniqueness gate, one passport per person, with used fingerprints never released.
+- Suspension as a module: temporary platform-wide suspension only after a warning, and permanent suspension, enforced through short validity periods and policy epochs.
+- Passport issuance through `cpsd`, where the issuer never sees the holder secret.
+- Its own service with its own database and its own `csgn` signing keys, separate from every community.
+- Publication of its public material through `cbcn` by reference.
+
+Storage goes only through `crlt` with every query index-backed. Clock, randomness, secrets, and storage handles are supplied by the caller. The operator keeps no login dates, request logs, raw gate data, or identifiers in errors.
+
+### Never
+
+- Sees or stores community pseudonyms, memberships, community databases, or community policy; the separation between the global side and the community side is a firewall.
+- Shares signing keys with communities.
+- Keeps raw provider evidence, proofs, issued passports, or login dates.
+- Releases a fingerprint or issues a replacement identity after expiry, loss of all passkeys, or suspension; there is no recovery path.
+- Hard-codes provider order, fallback, or minimum standards; ordering and fallback belong to `cfbk` with `crbk` settings.
+- Runs a paid provider without approval, or includes the development gate in a release build.
+- Lets one community identity carry over into another community.
+- Uses trust scores or confidence levels; a gate is either on or off.
+
+### States
+
+| Entity | Lifecycle |
+|---|---|
+| Person | Unknown, gate checks in progress, eligible, passport issued, renewed; eligible can move to temporarily suspended and back only after a warning; permanently suspended is terminal |
+| Uniqueness reservation | Absent, then burned; burned is terminal and never released |
+| Issuance slot | None, pending with a short deadline, then consumed or expired; at most one pending slot per person |
+
+### Test obligations
+
+- Same holder in the same community yields the same pseudonym; the same holder in different communities stays unlinkable; the issuer never sees the holder secret.
+- Equivalent spellings of one phone number reserve one identity; a used fingerprint cannot serve a second person; one holder secret cannot attach to a second person to bypass a suspension.
+- Expiry, loss of all passkeys, and suspension never release a fingerprint, and no reset or recovery interface exists.
+- Temporary suspension requires a prior warning; an epoch increase makes old passports fail at the next verification; a suspended person cannot renew; permanent suspension has no reversal.
+- Retries with the same check identifier never charge twice; a provider without an idempotent billing interface cannot back a paid gate.
+- A gate or provider that is switched off never runs; a gate without an approved provider stays unavailable and never passes.
+- No community identifier enters a request, a stored row, or the public status.
+- The development gate is absent from release builds and refused in production mode.
+
 ## License
 
 Copyright 2026 Julian Y. Richard Corbet. Licensed under the [Functional Source License, Version 1.1, ALv2 Future License](LICENSE.md).
